@@ -1,6 +1,6 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "second-brain",
-  "version": "0.2.2",
-  "description": "Initialize and use one shared Obsidian memory across coding projects."
+  "version": "0.3.0",
+  "description": "Automatically recall and save shared Obsidian memory in initialized coding projects."
 }

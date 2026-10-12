@@ -317,7 +317,7 @@ def brief(root, project='memory/projects/second-brain.md', limit=6000):
     if project_path and project_path.exists():
         # Project-maintained pointers, rather than directory timestamps, define recent context.
         for line in project_path.read_text(encoding='utf-8').splitlines():
-            if line.startswith(('Latest checkpoint:', 'Latest handoff:')):
+            if line.startswith(('Latest checkpoint:', 'Latest handoff:', 'Latest automatic record:')):
                 match = re.search(r'\[\[([^|\]]+)', line)
                 if match:
                     paths.append(wiki_relative(root, match[1]) + '.md')

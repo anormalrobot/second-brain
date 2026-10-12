@@ -24,10 +24,11 @@ def build(destination):
     try:
         plugin = staging / 'plugins/second-brain'
         setup.stage_runtime(plugin, files)
-        brain.save_json(plugin / 'plugin.json', metadata)
+        # Native manifests are the entry points for both supported clients.
+        # A portable root manifest shadows Codex's native hook configuration in 0.162.1.
         common = {k: metadata[k] for k in ('name', 'version', 'description')}
         brain.save_json(plugin / '.claude-plugin/plugin.json', common)
-        brain.save_json(plugin / '.codex-plugin/plugin.json', {**common, 'skills': './skills/'})
+        brain.save_json(plugin / '.codex-plugin/plugin.json', {**common, 'skills': './skills/', 'hooks': './hooks/hooks.json'})
         brain.save_json(staging / '.agents/plugins/marketplace.json', {
             'name': 'second-brain-local', 'interface': {'displayName': metadata['name']},
             'plugins': [{'name': 'second-brain', 'source': {'source': 'local', 'path': './plugins/second-brain'},

@@ -37,6 +37,14 @@ specific issue and collect a corrected path. Do not replace existing files or
 silently create a different brain. A configured but missing vault needs an explicit
 choice; plain init must not discard it.
 
-Report the final Obsidian vault path and that the project is connected. The vault
-and registry remain outside the plugin package. For further memory work, follow
-the resolved vault's AGENTS.md and use the second-brain workflow skill.
+After setup, run `brief` and read the resolved vault's AGENTS.md. Apply the bundled
+[second-brain skill](../second-brain/SKILL.md) to the current conversation so setup
+immediately leads into memory use. Report the vault path and project connection.
+
+Native plugin hooks load context at session/prompt start and save an attributed
+record when a response finishes. Tell the user to restart after installing or
+updating the plugin. Codex also requires reviewing the plugin hooks in `/hooks`;
+do not bypass hook trust or silently modify trust settings. Use `automation status`
+to inspect actual event timestamps; a configured vault alone does not prove hooks
+ran. Ordinary work needs no memory slash command once hooks are active. Do not
+claim hooks are installed by the standalone skill or terminal helper alone.

@@ -24,6 +24,7 @@ DEFAULT_VAULT_FOLDER = 'second-brain-vault'
 MANAGED_BRAIN_FOLDER = 'second-brain'
 RUNTIME_FILES = (
     'scripts/brain.py', 'scripts/check_vault.py', 'scripts/second_brain.py',
+    'scripts/memory_hooks.py', 'hooks/hooks.json',
     'skills/second-brain/SKILL.md', 'skills/second-brain/agents/openai.yaml',
     'skills/second-brain/scripts/second_brain.py',
     'skills/init/SKILL.md', 'skills/init/scripts/second_brain.py',
@@ -106,7 +107,8 @@ for memory operations.
 Personal knowledge is shared; project notes and handoffs stay separate.
 Existing notes outside this managed folder are preserved and are not automatically
 ingested. Read and cite them deliberately; archive source copies under raw/ when
-using the ingestion ledger. No sync service or global lifecycle hook is installed.
+using the ingestion ledger. Native plugin hooks load memory and save attributed
+conversation records in initialized projects. No sync service is installed.
 ''',
     }
     for name, value in files.items():
@@ -247,7 +249,36 @@ def context(config, cwd, vault=None):
     return {'vault': name, 'vault_id': entry['id'], 'root': str(root),
             'obsidian_vault': str(root.parent if link_prefix(root) else root),
             'link_prefix': link_prefix(root), 'project': project,
+            'automatic_memory': bool(project and binding.get('automatic_memory', True)),
             'config': str(config), 'cwd': str(cwd)}
+
+
+def automation_receipt(info):
+    key = brain.digest(info['project'].encode())[:24]
+    return Path(info['root']) / '.brain/automation' / ('project-' + key + '.json')
+
+
+def automation(config, cwd, mode='status'):
+    info = context(config, cwd)
+    if not info['project']:
+        raise ValueError('Run init in this project before configuring automatic memory')
+    if mode != 'status':
+        with brain.writer(config.parent):
+            data = registry(config)
+            path = Path(cwd).resolve()
+            binding = next(data['projects'][str(p)] for p in (path, *path.parents) if str(p) in data['projects'])
+            binding['automatic_memory'] = mode == 'on'
+            brain.save_json(config, data)
+        info = context(config, cwd)
+        if mode == 'off':
+            with brain.writer(Path(info['root'])):
+                for pending in (Path(info['root']) / '.brain/automation').glob('session-*.json'):
+                    if brain.load_json(pending, {}).get('project') == info['project']:
+                        pending.unlink()
+    return {'enabled': info['automatic_memory'], 'project': info['project'],
+            'events': brain.load_json(automation_receipt(info), {}),
+            'note': 'Native plugin hooks must be enabled. In Codex, review them in /hooks. '
+                    'Event timestamps show actual hook execution, not just configuration.'}
 
 
 def bind(config, path, vault=None, project=None, note=None, replace=False):
@@ -279,7 +310,7 @@ def _bind(data, path, vault=None, project=None, note=None, replace=False):
         project = slug(project) if project else base + '-' + brain.digest(str(path).encode())[:12]
         relative = 'memory/projects/' + project + '.md'
     desired = {'vault_id': entry['id'], 'project': relative}
-    if old and old != desired and not replace:
+    if old and any(old.get(key) != value for key, value in desired.items()) and not replace:
         raise ValueError('Project already bound differently; use --replace to change its local mapping')
     with brain.writer(root):
         target = brain.scoped(root, relative, area='memory/projects')
@@ -291,7 +322,7 @@ def _bind(data, path, vault=None, project=None, note=None, replace=False):
                 f'# Project — {target.stem}\n\nNo project decisions or progress recorded yet.\n\n'
                 'Source: explicit local project binding during setup. This is a navigation record.\n')
         brain.add_index(root, relative, target.stem)
-    data['projects'][str(path)] = desired
+    data['projects'][str(path)] = {**desired, 'automatic_memory': old.get('automatic_memory', True) if old else True}
 
 
 def init_options(config, cwd, home=None):
@@ -514,6 +545,8 @@ def main(argv=None):
     p = sub.add_parser('use'); p.add_argument('name')
     for action, help_text in (('status', 'Show local setup'), ('context', 'Show the selected vault and project'), ('brief', 'Resume from saved memory')):
         sub.add_parser(action, help=help_text)
+    p = sub.add_parser('automation', help='Inspect, pause, or resume automatic project memory')
+    p.add_argument('mode', nargs='?', default='status', choices=('status', 'on', 'off'))
     p = sub.add_parser('run', add_help=False, help='Run a memory operation'); p.add_argument('-h', '--help', action='store_true'); p.add_argument('arguments', nargs=argparse.REMAINDER)
     p = sub.add_parser('launch', help='Start Codex or Claude Code with vault access'); p.add_argument('--dry-run', action='store_true'); p.add_argument('client', choices=('codex', 'claude')); p.add_argument('arguments', nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
@@ -542,6 +575,7 @@ def main(argv=None):
                 brain.save_json(config, data)
             result = data
         elif args.command == 'status': result = registry(config)
+        elif args.command == 'automation': result = automation(config, args.cwd, args.mode)
         else:
             info = context(config, args.cwd, args.vault)
             if args.command == 'context': result = info

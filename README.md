@@ -4,6 +4,10 @@ Give Codex and Claude Code a shared memory across sessions and projects. Save
 your preferences, decisions, research, and project progress in an Obsidian vault,
 then ask either agent to pick up where you left off.
 
+After `init`, the native plugin loads memory during ordinary project work and
+saves a conversation record when the agent finishes responding. You do not need
+to invoke the memory skill for every task.
+
 Your notes are ordinary Markdown files. You can read and edit them in Obsidian,
 and explore their connections through `[[wikilinks]]`, backlinks, and the graph.
 
@@ -80,19 +84,24 @@ Follow the [vault choices](#choose-your-vault) below. Select the plugin's `init`
 skill; the client's built-in `/init` sets up project instructions instead.
 See the [OpenAI skill guide](https://learn.chatgpt.com/docs/build-skills#how-chatgpt-and-codex-use-skills).
 
+In Codex, open **`/hooks`** and review and trust the three `second-brain` hooks:
+`SessionStart`, `UserPromptSubmit`, and `Stop`. Restart the session afterward.
+Codex skips hooks until this review is complete; installing the plugin alone
+does not activate automatic memory. See [Codex hook activation](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks).
+
 ### 3. Example: remember a preference across sessions
 
-Select the `second-brain` memory skill using the same picker and send:
+After setup, send a normal message:
 
-> Remember that I prefer concise explanations with Python examples.
+> I prefer concise explanations with Python examples.
 
-Codex saves this preference in the shared vault. In a later session, select the
-memory skill again and ask:
+Codex receives the memory workflow automatically, and the completed exchange is
+recorded in the vault. In a later session in the same project, ask:
 
-> What are my saved preferences for explanations and code examples?
+> How should you explain code to me?
 
-Codex reads the saved note. Claude Code can recall the same preference when it
-uses this vault. In the Codex CLI or IDE, you can also send:
+Codex receives the saved context before answering. Claude Code can use the same
+vault. You can still select the memory skill for a specific memory task:
 
 ```text
 $second-brain What are my saved preferences for explanations and code examples?
@@ -145,22 +154,29 @@ already configured a vault with Codex, setup reuses it.
 Use the plugin's `/second-brain:init`; Claude's built-in `/init` sets up project
 instructions. See [Claude's skill controls](https://code.claude.com/docs/en/desktop#use-skills).
 
+Once setup completes, continue with normal messages. The plugin's native hooks
+load memory before work and record completed responses. If you installed or
+updated the plugin during this session, restart Claude Code first.
+
 ### 3. Example: continue a project in a new session
 
-After working on your project, send:
+For example, send a normal task without a slash command:
 
 ```text
-/second-brain:second-brain Save our progress, decisions, pending work, and the next step for this project.
+Add setup instructions to this project's README and check that the commands work.
 ```
 
-Claude Code saves a project handoff. Open the same project in a later session and
-send:
+Claude Code performs the task with saved context available. The plugin records
+its final response, and the memory workflow asks it to maintain useful decisions
+and next steps. Open the same project in a later session and ask:
 
 ```text
-/second-brain:second-brain Read this project's latest handoff and tell me what to do next.
+Where did we leave off, and what remains to be done?
 ```
 
-Claude Code reads the saved progress and next step. In Desktop, you can select
+Claude Code receives the previous progress automatically. For explicit archive
+maintenance or ingestion, you can still invoke `/second-brain:second-brain`.
+In Desktop, you can select
 `second-brain:second-brain` from the slash-command menu, then type your request.
 These are conversation inputs, not shell commands.
 
@@ -197,12 +213,27 @@ connections in place.
 
 ## Everyday use
 
-Select the `second-brain` memory skill and ask it to recall a decision, process a
-document, connect related notes, or save your progress. Before ending a session,
-ask it to save what you completed and the next step.
+Work normally in a project where you have run `init`. The plugin:
 
-The plugin does not automatically record every conversation. Maintained notes
-are written in English; original source material keeps its language.
+- Loads your profile, project state, recent records, and relevant note excerpts.
+- Guides the agent to maintain useful preferences, decisions, and next steps.
+- Saves bounded excerpts of your request and the final response under
+  `memory/sessions/`, with links from the project note and vault index.
+
+Automatic records preserve what was said; they do not prove that a task succeeded.
+The agent keeps accepted facts separate from proposals and unverified claims.
+Maintained notes are in English; quoted source material keeps its language.
+
+Only initialized projects participate. The plugin does not read entire chat
+transcripts, tool outputs, or hidden reasoning, and does not run a background
+model. Interrupted turns without a final response are not captured. Recognizable
+credentials are redacted, but avoid putting secrets in conversations you record.
+
+To pause or check the feature, ask your agent to run `second-brain automation off`,
+`second-brain automation on`, or `second-brain automation status` using its bundled
+helper. Status includes timestamps for hooks that actually ran. Previously
+initialized projects also gain automatic memory after upgrading and activating
+the hooks; pausing preserves their existing notes.
 
 ## If something does not work
 
@@ -210,6 +241,10 @@ are written in English; original source material keeps its language.
   plugin manager, restart the client, and open a new session.
 - **The agent cannot access the vault:** allow access through the client's normal
   controls. For CLI sessions, the optional launcher below can include the vault.
+- **Normal messages do not load or save memory:** ask the agent to check
+  `automation status`. If there are no `UserPromptSubmit` or `Stop` events, restart
+  the client and check its hook settings. In Codex, review the plugin in `/hooks`.
+  A vault existing on disk does not mean the hooks are active.
 
 <details>
 <summary>Optional terminal commands and launcher</summary>

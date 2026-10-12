@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/scripts/memory_hooks.py\"", "timeout": 10}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/scripts/memory_hooks.py\"", "timeout": 10}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "python3 -B \"${CLAUDE_PLUGIN_ROOT}/scripts/memory_hooks.py\"", "timeout": 10}]}]
+  }
+}

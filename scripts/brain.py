@@ -3,16 +3,24 @@
 import argparse
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
+import errno
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import socket
 import tempfile
+import time
 import uuid
 import zipfile
-from zoneinfo import ZoneInfo
+
+try:
+    import fcntl
+except ImportError:  # Windows: lock byte 0 with msvcrt instead.
+    fcntl = None
+    import msvcrt
 
 try:
     from .check_vault import check, without_examples, wiki_target, wiki_relative
@@ -21,6 +29,7 @@ except ImportError:
 
 VERSION = 1
 LEDGER = 'inbox/source-ledger.json'
+LOCK_WAIT = 2.5  # Seconds; hooks time out after 10 s, so contention waits only briefly.
 
 
 def digest(data):
@@ -32,7 +41,7 @@ def timestamp():
 
 
 def day():
-    return datetime.now(ZoneInfo('Europe/Istanbul')).date().isoformat()
+    return datetime.now().astimezone().date().isoformat()
 
 
 def atomic_write(path, text):
@@ -73,19 +82,61 @@ def scoped(root, relative, *, area=None):
     return path
 
 
+def lock_file(fd, lock):
+    """Non-blocking exclusive lock; the kernel releases it if the holder dies."""
+    try:
+        if fcntl:
+            fcntl.flock(fd, (fcntl.LOCK_EX | fcntl.LOCK_NB) if lock else fcntl.LOCK_UN)
+        else:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK if lock else msvcrt.LK_UNLCK, 1)
+    except BlockingIOError:
+        return False
+    except OSError as exc:
+        if fcntl or not lock or exc.errno not in (errno.EACCES, errno.EDEADLK):
+            raise
+        return False
+    return True
+
+
+def describe_lock(path):
+    try:
+        owner = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        owner = None
+    owner = owner if isinstance(owner, dict) else {}
+    detail = ', '.join(f'{k} {owner[k]}' for k in ('pid', 'hostname', 'started') if k in owner)
+    return detail or 'owner unknown'
+
+
 @contextmanager
-def writer(root):
-    lock = Path(root) / '.brain' / 'write.lock'
-    lock.parent.mkdir(parents=True, exist_ok=True)
+def writer(root, wait=None):
+    # An OS advisory lock needs no staleness rules. Legacy .brain/write.lock directories
+    # left by plugin <= 0.3.0 are ignored, and this file is never deleted.
+    path = Path(root) / '.brain' / 'write.flock'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
     try:
-        lock.mkdir()
-    except FileExistsError:
-        raise ValueError('Another writer is active. Inspect .brain/write.lock before retrying.')
-    try:
-        (lock / 'owner.json').write_text(json.dumps({'pid': os.getpid(), 'started': timestamp()}))
-        yield
+        deadline = time.monotonic() + (LOCK_WAIT if wait is None else wait)
+        while not lock_file(fd, True):
+            if time.monotonic() >= deadline:
+                raise ValueError(f'Another writer is active ({describe_lock(path)}). '
+                                 f'Retry shortly; the lock is released when that process exits: {path}')
+            time.sleep(0.05)
+        try:
+            # Owner details only inform the error message above; the kernel lock is authoritative.
+            owner = json.dumps({'pid': os.getpid(), 'hostname': socket.gethostname(), 'started': timestamp()})
+            os.ftruncate(fd, 0)
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.write(fd, owner.encode())
+        except OSError:
+            pass
+        try:
+            yield
+        finally:
+            lock_file(fd, False)
     finally:
-        shutil.rmtree(lock)
+        os.close(fd)
 
 
 def load_ledger(root):
@@ -217,6 +268,9 @@ def finish(root, key, token, outputs=None, error=None):
                     raise ValueError('Each output must link directly to a current raw source path')
                 hashes[relative] = digest(path.read_bytes())
             issues, notes, links = check(root)
+            # Unrelated broken notes elsewhere must not block ingestion; global issues still do.
+            names = {str(scoped(root, r).relative_to(root)) for r in outputs}
+            issues = [i for i in issues if not re.match(r'.+?\.md:', i) or re.match(r'(.+?\.md):', i)[1] in names]
             if issues:
                 raise ValueError('Structural validation failed: ' + '; '.join(issues[:5]))
             entry.update(state='processed', outputs=hashes, error=None,
@@ -308,7 +362,7 @@ Project: [[{wiki_target(root, project)}|Project state]].
     return {'path': relative, 'state': 'completed' if complete else 'active'}
 
 
-def brief(root, project='memory/projects/second-brain.md', limit=6000):
+def brief(root, project=None, limit=6000):
     root = Path(root).resolve()
     if limit < 500:
         raise ValueError('Context limit must be at least 500 characters')
@@ -321,13 +375,44 @@ def brief(root, project='memory/projects/second-brain.md', limit=6000):
                 match = re.search(r'\[\[([^|\]]+)', line)
                 if match:
                     paths.append(wiki_relative(root, match[1]) + '.md')
-    chunks = ['Shared memory: read index.md for deeper evidence. Save meaningful progress with second-brain run checkpoint.']
-    for relative in dict.fromkeys(paths):
-        p = scoped(root, relative)
-        if p.is_file():
-            cap = 1100 if relative == 'memory/profile.md' else 1800
-            chunks.append('\nFILE: ' + relative + '\n' + p.read_text(encoding='utf-8')[:cap])
-    return '\n'.join(chunks)[:limit]
+    out = 'Shared memory: read index.md for deeper evidence. Save meaningful progress with second-brain run checkpoint.'
+    files = [(r, scoped(root, r)) for r in dict.fromkeys(paths)]
+    files = [(r, p.read_text(encoding='utf-8')) for r, p in files if p.is_file()]
+
+    def omitted(rest, room):
+        """The most specific complete omission marker that fits in room, or None."""
+        if not rest:
+            return '' if room >= 0 else None
+        for note in (f'\n[omitted by brief limit: {", ".join(rest)}; read these files]',
+                     f'\n[omitted by brief limit: {len(rest)} more files linked from {project or "index.md"}; read them]',
+                     '\n[brief truncated; read the project note]'):
+            if len(note) <= room:
+                return note
+        return None
+
+    def truncated(relative, count, total):
+        return f'\n[truncated: {relative} shows {count} of {total} chars; read the file]'
+    # Invariant: after each accepted file, a complete omission marker for the rest still fits.
+    if omitted([r for r, _ in files], limit - len(out)) is None:
+        out = ''
+    for number, (relative, text) in enumerate(files):
+        head = '\n\nFILE: ' + relative + '\n'
+        later = [r for r, _ in files[number + 1:]]
+        shown = min(len(text), 1100 if relative == 'memory/profile.md' else 1800)
+        tail = truncated(relative, shown, len(text)) if shown < len(text) else ''
+        chunk = head + text[:shown] + tail
+        rest = omitted(later, limit - len(out) - len(chunk))
+        if rest is not None:
+            out += chunk
+            continue
+        for _ in range(2):  # The count's digits affect the marker length.
+            used = len(out) + len(head) + len(truncated(relative, shown, len(text)))
+            rest = omitted(later, limit - used - 1)
+            shown = max(0, min(shown, limit - used - len(rest or ''))) if rest is not None else 0
+        if shown > 0:
+            return out + head + text[:shown] + truncated(relative, shown, len(text)) + rest
+        return out + omitted([r for r, _ in files[number:]], limit - len(out))
+    return out
 
 
 def search(root, query, limit=8):
@@ -501,21 +586,25 @@ def restore(archive_path, destination):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[1])
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument('--root', type=Path, help='Brain root; required except for restore')
     sub = parser.add_subparsers(dest='command', required=True)
+    add = lambda name: sub.add_parser(name, allow_abbrev=False)
     for name in ('scan', 'coverage'):
-        sub.add_parser(name)
-    p = sub.add_parser('begin'); p.add_argument('source')
-    p = sub.add_parser('finish'); p.add_argument('source'); p.add_argument('--token', required=True); p.add_argument('--output', action='append'); p.add_argument('--error')
-    p = sub.add_parser('checkpoint'); p.add_argument('--project', default='memory/projects/second-brain.md'); p.add_argument('--summary', required=True); p.add_argument('--next', required=True); p.add_argument('--evidence', action='append', required=True); p.add_argument('--id'); p.add_argument('--date'); p.add_argument('--complete', action='store_true')
-    p = sub.add_parser('brief'); p.add_argument('--project', default='memory/projects/second-brain.md'); p.add_argument('--limit', type=int, default=6000)
-    p = sub.add_parser('search'); p.add_argument('query'); p.add_argument('--limit', type=int, default=8)
-    p = sub.add_parser('doctor'); p.add_argument('--as-of'); p.add_argument('--stale-days', type=int, default=90)
-    p = sub.add_parser('consolidate'); p.add_argument('--source', required=True); p.add_argument('--target', required=True); p.add_argument('--text-file', type=Path, required=True); p.add_argument('--evidence', action='append', required=True); p.add_argument('--expected-sha', required=True); p.add_argument('--date')
-    p = sub.add_parser('snapshot'); p.add_argument('--output', type=Path, required=True)
-    p = sub.add_parser('restore'); p.add_argument('archive', type=Path); p.add_argument('--destination', type=Path, required=True)
-    args = parser.parse_args(argv); root = args.root.resolve()
+        add(name)
+    p = add('begin'); p.add_argument('source')
+    p = add('finish'); p.add_argument('source'); p.add_argument('--token', required=True); p.add_argument('--output', action='append'); p.add_argument('--error')
+    p = add('checkpoint'); p.add_argument('--project', required=True); p.add_argument('--summary', required=True); p.add_argument('--next', required=True); p.add_argument('--evidence', action='append', required=True); p.add_argument('--id'); p.add_argument('--date'); p.add_argument('--complete', action='store_true')
+    p = add('brief'); p.add_argument('--project'); p.add_argument('--limit', type=int, default=6000)
+    p = add('search'); p.add_argument('query'); p.add_argument('--limit', type=int, default=8)
+    p = add('doctor'); p.add_argument('--as-of'); p.add_argument('--stale-days', type=int, default=90)
+    p = add('consolidate'); p.add_argument('--source', required=True); p.add_argument('--target', required=True); p.add_argument('--text-file', type=Path, required=True); p.add_argument('--evidence', action='append', required=True); p.add_argument('--expected-sha', required=True); p.add_argument('--date')
+    p = add('snapshot'); p.add_argument('--output', type=Path, required=True)
+    p = add('restore'); p.add_argument('archive', type=Path); p.add_argument('--destination', type=Path, required=True)
+    args = parser.parse_args(argv)
+    if args.root is None and args.command != 'restore':
+        parser.error('--root is required for ' + args.command)
+    root = args.root.resolve() if args.root else None
     try:
         if args.command == 'scan': result = scan(root)
         elif args.command == 'coverage': result = coverage(root)

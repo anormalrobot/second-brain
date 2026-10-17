@@ -157,7 +157,10 @@ def check(root):
 
 
 def main():
-    root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[1]
+    if len(sys.argv) != 2:
+        print("usage: check_vault.py VAULT_ROOT", file=sys.stderr)
+        return 2
+    root = Path(sys.argv[1])
     errors, notes, links = check(root)
     if errors:
         print("FAIL\n" + "\n".join(errors))

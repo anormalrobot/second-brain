@@ -54,7 +54,9 @@ Existing notes outside the managed folder can be read and cited deliberately;
 they are not automatically imported or rewritten.
 
 Native Stop hooks save bounded excerpts of the visible request and final response
-as `status: recorded` session notes, linked from the project and index. These are
+as `status: recorded` session notes, listed in the project's
+`memory/sessions/records/PROJECT.md` (linked from the project note and index).
+Notes use the system's local date. These are
 source evidence, not verified conclusions or a substitute for canonical notes.
 Use a prior automatic record as evidence when consolidating a fact it supports.
 For current-turn findings, cite real files or explicitly attribute the user's

@@ -218,7 +218,10 @@ Work normally in a project where you have run `init`. The plugin:
 - Loads your profile, project state, recent records, and relevant note excerpts.
 - Guides the agent to maintain useful preferences, decisions, and next steps.
 - Saves bounded excerpts of your request and the final response under
-  `memory/sessions/`, with links from the project note and vault index.
+  `memory/sessions/`. Each project keeps one records list,
+  `memory/sessions/records/PROJECT.md`, linked once from the project note and
+  vault index, so `index.md` and `log.md` do not grow with every turn.
+- Names and dates notes using your computer's local date.
 
 Automatic records preserve what was said; they do not prove that a task succeeded.
 The agent keeps accepted facts separate from proposals and unverified claims.

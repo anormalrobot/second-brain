@@ -193,6 +193,14 @@ def _connect(data, name, path, *, create=False, default=False, folder=MANAGED_BR
             root = create_root(root, folder)
             created = True
     info = identity(root)
+    for alias, old in list(data['vaults'].items()):
+        # A vault recreated at the same path has a new identity; the old alias can never resolve
+        # again. Retire it (including this alias) before conflict checks; bindings keep the old ID.
+        if old['root'] == str(root) and old['id'] != info['id']:
+            del data['vaults'][alias]
+            if data['default'] == alias:
+                data['default'] = None
+    previous = data['vaults'].get(name)
     if previous and previous['id'] != info['id']:
         raise ValueError('Vault identity differs from the registered vault; choose another alias')
     for alias, old in data['vaults'].items():
@@ -208,15 +216,24 @@ def _connect(data, name, path, *, create=False, default=False, folder=MANAGED_BR
             'obsidian_vault': str(root.parent if link_prefix(root) else root)}
 
 
-def project_root(path):
+def project_root(path, allow_broad=False):
     path = Path(path).expanduser().resolve()
     if not path.is_dir():
         raise ValueError('Project directory does not exist: ' + str(path))
     try:
         result = subprocess.run(['git', '-C', str(path), 'rev-parse', '--show-toplevel'], capture_output=True, text=True)
+        root = Path(result.stdout.strip()).resolve() if result.returncode == 0 else path
     except FileNotFoundError:
-        return path  # Git root detection is optional for ordinary project folders.
-    return Path(result.stdout.strip()).resolve() if result.returncode == 0 else path
+        root = path  # Git root detection is optional for ordinary project folders.
+    if allow_broad:
+        return root
+    broad = {Path.home().resolve(), Path(path.anchor)}
+    if root in broad and path not in broad:
+        return path  # A home-directory dotfiles repository must not swallow its projects.
+    if root in broad:
+        raise ValueError('Refusing to bind ' + str(root) + ' as a project: it would capture every '
+                         'project beneath it. Run init from a specific project directory.')
+    return root
 
 
 def selected(data, name):
@@ -229,7 +246,9 @@ def selected(data, name):
         raise ValueError('Registered vault is missing; use second-brain init --existing NEW_PATH after moving it: ' + str(root))
     info = identity(root)
     if info['id'] != entry['id']:
-        raise ValueError('Registered vault identity changed; refusing to use another brain')
+        raise ValueError('Registered vault identity changed at ' + str(root) + '; refusing to use another brain. '
+                         'If the vault was recreated, run: second-brain init --existing ' + str(root) +
+                         ' (this creates a fresh project note in the new brain)')
     return name, root, entry
 
 
@@ -241,7 +260,9 @@ def context(config, cwd, vault=None):
     if not name and binding:
         name = next((k for k, v in data['vaults'].items() if v['id'] == binding['vault_id']), None)
         if name is None:
-            raise ValueError('Project binding points to an unregistered vault')
+            raise ValueError('Project binding points to an unregistered vault. If the vault was recreated '
+                             'or moved, run: second-brain init --existing VAULT_PATH (this creates a fresh '
+                             'project note in the new brain)')
     name, root, entry = selected(data, name)
     project = binding['project'] if binding and binding['vault_id'] == entry['id'] else None
     if project and not brain.scoped(root, project, area='memory/projects').is_file():
@@ -509,7 +530,9 @@ def run_operation(config, cwd, vault, arguments):
     extra = arguments[1:] if arguments[:1] == ['--'] else list(arguments)
     if not extra or extra == ['--help']:
         return brain.main(['--help'])
-    if any(a.split('=')[0] in ('--root', '--project') for a in extra):
+    # Reject every argparse-style prefix as well, so abbreviations cannot bypass the guard.
+    if any(len(a.split('=')[0]) >= 3 and any(f.startswith(a.split('=')[0]) for f in ('--root', '--project'))
+           for a in extra):
         raise ValueError('Routed operations use the selected vault and bound project; use init or --vault to change them')
     if extra[:1] == ['restore']:
         return brain.main(extra)  # Archive + destination suffice, even if the vault is gone.
@@ -523,32 +546,33 @@ def run_operation(config, cwd, vault, arguments):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Start with init to choose a shared Obsidian vault and connect this project.',
-        epilog='Advanced compatibility commands: create, connect, bind, unbind, use. Run COMMAND --help for details.')
+        epilog='Advanced compatibility commands: create, connect, bind, unbind, use. Run COMMAND --help for details.',
+        allow_abbrev=False)
     parser.add_argument('--config', type=Path, default=config_path())
     parser.add_argument('--cwd', type=Path, default=Path.cwd())
     parser.add_argument('--vault', help='Explicit vault alias; otherwise use project binding, then default')
     sub = parser.add_subparsers(dest='command', required=True, metavar='COMMAND')
-    p = sub.add_parser('init', help='Choose a vault and connect the current project in one step')
+    p = sub.add_parser('init', help='Choose a vault and connect the current project in one step', allow_abbrev=False)
     choice = p.add_mutually_exclusive_group()
     choice.add_argument('--default', action='store_true', help='Use ~/second-brain-vault')
     choice.add_argument('--new', help='Create a vault at this path')
     choice.add_argument('--existing', help='Use an existing vault at this path')
     choice.add_argument('--choose', action='store_true', help='Show the three choices even when already configured')
     choice.add_argument('--options', action='store_true', help='Return read-only setup choices for an agent')
-    p = sub.add_parser('install', help='Install or update the local command and personal skill'); p.add_argument('--home', type=Path); p.add_argument('--data-dir', type=Path); p.add_argument('--command-only', action='store_true', help='Install the terminal command alongside a native plugin without duplicate personal skills')
+    p = sub.add_parser('install', help='Install or update the local command and personal skill', allow_abbrev=False); p.add_argument('--home', type=Path); p.add_argument('--data-dir', type=Path); p.add_argument('--command-only', action='store_true', help='Install the terminal command alongside a native plugin without duplicate personal skills')
     for action in ('create', 'connect'):
-        p = sub.add_parser(action); p.add_argument('name'); p.add_argument('path', type=Path); p.add_argument('--default', action='store_true')
+        p = sub.add_parser(action, allow_abbrev=False); p.add_argument('name'); p.add_argument('path', type=Path); p.add_argument('--default', action='store_true')
         if action == 'connect':
             p.add_argument('--folder', default=MANAGED_BRAIN_FOLDER); p.add_argument('--relocate', action='store_true')
-    p = sub.add_parser('bind'); p.add_argument('path', type=Path, nargs='?'); p.add_argument('--project'); p.add_argument('--note'); p.add_argument('--replace', action='store_true')
-    p = sub.add_parser('unbind'); p.add_argument('path', type=Path)
-    p = sub.add_parser('use'); p.add_argument('name')
+    p = sub.add_parser('bind', allow_abbrev=False); p.add_argument('path', type=Path, nargs='?'); p.add_argument('--project'); p.add_argument('--note'); p.add_argument('--replace', action='store_true')
+    p = sub.add_parser('unbind', allow_abbrev=False); p.add_argument('path', type=Path)
+    p = sub.add_parser('use', allow_abbrev=False); p.add_argument('name')
     for action, help_text in (('status', 'Show local setup'), ('context', 'Show the selected vault and project'), ('brief', 'Resume from saved memory')):
-        sub.add_parser(action, help=help_text)
-    p = sub.add_parser('automation', help='Inspect, pause, or resume automatic project memory')
+        sub.add_parser(action, help=help_text, allow_abbrev=False)
+    p = sub.add_parser('automation', help='Inspect, pause, or resume automatic project memory', allow_abbrev=False)
     p.add_argument('mode', nargs='?', default='status', choices=('status', 'on', 'off'))
-    p = sub.add_parser('run', add_help=False, help='Run a memory operation'); p.add_argument('-h', '--help', action='store_true'); p.add_argument('arguments', nargs=argparse.REMAINDER)
-    p = sub.add_parser('launch', help='Start Codex or Claude Code with vault access'); p.add_argument('--dry-run', action='store_true'); p.add_argument('client', choices=('codex', 'claude')); p.add_argument('arguments', nargs=argparse.REMAINDER)
+    p = sub.add_parser('run', add_help=False, help='Run a memory operation', allow_abbrev=False); p.add_argument('-h', '--help', action='store_true'); p.add_argument('arguments', nargs=argparse.REMAINDER)
+    p = sub.add_parser('launch', help='Start Codex or Claude Code with vault access', allow_abbrev=False); p.add_argument('--dry-run', action='store_true'); p.add_argument('client', choices=('codex', 'claude')); p.add_argument('arguments', nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     config = args.config.expanduser().resolve()
     try:
@@ -571,7 +595,7 @@ def main(argv=None):
                     selected(data, args.name)
                     data['default'] = args.name
                 else:
-                    data['projects'].pop(str(project_root(args.path)), None)
+                    data['projects'].pop(str(project_root(args.path, allow_broad=True)), None)
                 brain.save_json(config, data)
             result = data
         elif args.command == 'status': result = registry(config)

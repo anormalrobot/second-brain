@@ -110,8 +110,11 @@ class AutomaticMemoryTests(unittest.TestCase):
         self.assertIn('status: recorded', body)
         self.assertIn('not an independently verified handoff', body)
         self.assertIn(record.stem, (self.root / self.info['project']).read_text())
-        self.assertIn(record.stem, (self.root / 'index.md').read_text())
-        self.assertIn(record.stem, (self.root / 'log.md').read_text())
+        # Records are listed in the per-project records index, not per turn in index.md/log.md.
+        self.assertIn(record.stem, (self.root / hooks.records_index(self.info['project'])).read_text())
+        self.assertNotIn(record.stem, (self.root / 'index.md').read_text())
+        self.assertNotIn(record.stem, (self.root / 'log.md').read_text())
+        self.assertLess(body.index('Recorded user request'), body.index('Recorded assistant response'))
         self.assert_valid()
 
     def test_fresh_session_recalls_automatically_recorded_work(self):

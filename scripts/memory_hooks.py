@@ -138,7 +138,7 @@ def load_context(info, event, own=()):
         'no slash command or user reminder is needed. Read the vault AGENTS.md and relevant '
         'source notes when more detail is needed. When tools and permissions allow, before your final response persist meaningful '
         'new preferences, accepted decisions, findings, and next steps using the second-brain '
-        'skill. Do not ask the user to invoke it. Keep canonical notes in English and cite '
+        'memory skill. Do not ask the user to invoke it. Keep canonical notes in English and cite '
         'evidence; do not turn proposals or assistant claims into accepted facts. '
         'A Stop hook also saves the visible request and final response as an attributed '
         'automatic record, even when you make no memory tool call. It does not validate claims '

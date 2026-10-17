@@ -76,4 +76,4 @@ Rules:
 - Turns recorded after the listing stay pending for the next compile.
 
 For general memory use, follow the bundled
-[second-brain skill](../second-brain/SKILL.md).
+[memory skill](../memory/SKILL.md).

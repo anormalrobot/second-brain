@@ -27,8 +27,8 @@ MANAGED_BRAIN_FOLDER = 'second-brain'
 RUNTIME_FILES = (
     'scripts/brain.py', 'scripts/check_vault.py', 'scripts/second_brain.py',
     'scripts/memory_hooks.py', 'scripts/redact.py', 'scripts/records.py', 'scripts/runs.py', 'hooks/hooks.json',
-    'skills/second-brain/SKILL.md', 'skills/second-brain/agents/openai.yaml',
-    'skills/second-brain/scripts/second_brain.py',
+    'skills/memory/SKILL.md', 'skills/memory/agents/openai.yaml',
+    'skills/memory/scripts/second_brain.py',
     'skills/init/SKILL.md', 'skills/init/scripts/second_brain.py',
     'skills/compile/SKILL.md', 'skills/compile/scripts/second_brain.py',
 )
@@ -509,13 +509,16 @@ def install(home=None, data_dir=None, command_only=False):
         home / '.local/bin/second-brain': current / 'bin/second-brain',
     }
     if not command_only:
-        links.update({home / '.agents/skills/second-brain': current / 'skills/second-brain',
-                      home / '.claude/skills/second-brain': current / 'skills/second-brain'})
+        links.update({home / '.agents/skills/memory': current / 'skills/memory',
+                      home / '.claude/skills/memory': current / 'skills/memory'})
+    # Links from installs before the skill was renamed to memory; removed only if they are ours.
+    renamed = {home / '.agents/skills/second-brain': current / 'skills/second-brain',
+               home / '.claude/skills/second-brain': current / 'skills/second-brain'}
     with brain.writer(data_dir):
         for dest, target in links.items():
             if os.path.lexists(dest) and (not dest.is_symlink() or os.readlink(dest) != str(target)):
                 raise ValueError('Installation would replace an unrelated file: ' + str(dest))
-        # Avoid two Codex discoveries of the same named skill from old manual installs.
+        # An old manual Codex install would load a second, stale copy of the memory instructions.
         legacy = (home / '.codex' if explicit_home else Path(os.environ.get('CODEX_HOME', home / '.codex'))) / 'skills/second-brain'
         if not command_only and os.path.lexists(legacy):
             raise ValueError('An existing Codex second-brain skill needs manual reconciliation: ' + str(legacy))
@@ -533,6 +536,9 @@ def install(home=None, data_dir=None, command_only=False):
         temporary = data_dir / ('.current-' + uuid.uuid4().hex)
         temporary.symlink_to(release, target_is_directory=True)
         os.replace(temporary, current)
+        for dest, target in renamed.items():
+            if not command_only and dest.is_symlink() and os.readlink(dest) == str(target):
+                dest.unlink()
         for dest, target in links.items():
             if not os.path.lexists(dest):
                 dest.parent.mkdir(parents=True, exist_ok=True)

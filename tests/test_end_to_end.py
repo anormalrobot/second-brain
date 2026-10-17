@@ -42,7 +42,7 @@ class PackagedCase(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         return proc
 
-    def cli(self, *args, skill='second-brain', env=None):
+    def cli(self, *args, skill='memory', env=None):
         """The bundled command as an agent runs it: the packaged skill's entry point."""
         proc = self.run_script(f'skills/{skill}/scripts/second_brain.py', '--cwd', self.project, 'run', *args, env=env)
         return json.loads(proc.stdout)
@@ -230,7 +230,7 @@ class LegacyVaultTests(PackagedCase):
     def test_a_vault_from_plugin_0_3_0_keeps_working(self):
         names = self.legacy_vault()
         original = self.note.read_text()
-        brief = self.run_script('skills/second-brain/scripts/second_brain.py', '--cwd', self.project, 'run', 'brief').stdout
+        brief = self.run_script('skills/memory/scripts/second_brain.py', '--cwd', self.project, 'run', 'brief').stdout
         self.assertIn('No project decisions or progress recorded yet.', brief)
         self.assertIn('LEGACY_ANSWER_2', brief)  # The latest record pointer still leads the brief.
         start = self.context(self.hook('SessionStart', 'upgraded', source='startup'))

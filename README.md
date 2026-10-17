@@ -102,10 +102,11 @@ recorded in the vault. In a later session in the same project, ask:
 > How should you explain code to me?
 
 Codex receives the saved context before answering. Claude Code can use the same
-vault. You can still select the memory skill for a specific memory task:
+vault. You can still select the plugin's `memory` skill for a specific memory
+task: type `$`, select it, then type your request, for example:
 
 ```text
-$second-brain What are my saved preferences for explanations and code examples?
+What are my saved preferences for explanations and code examples?
 ```
 
 ## Use with Claude Code
@@ -176,9 +177,9 @@ Where did we leave off, and what remains to be done?
 ```
 
 Claude Code receives the previous progress automatically. For explicit archive
-maintenance or ingestion, you can still invoke `/second-brain:second-brain`.
+maintenance or ingestion, you can still invoke `/second-brain:memory`.
 In Desktop, you can select
-`second-brain:second-brain` from the slash-command menu, then type your request.
+`second-brain:memory` from the slash-command menu, then type your request.
 These are conversation inputs, not shell commands.
 
 ## Choose your vault

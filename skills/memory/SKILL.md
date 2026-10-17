@@ -1,9 +1,9 @@
 ---
-name: second-brain
+name: memory
 description: Use shared Obsidian memory during ordinary work in initialized projects. Recall preferences, decisions, and prior progress before a task; save durable findings and next steps before finishing. Also ingest sources or maintain the archive when requested.
 ---
 
-# second-brain
+# second-brain memory
 
 In an initialized project, use memory as part of normal work without waiting for
 a slash command or a request to remember. Native hooks load the full brief at

@@ -38,7 +38,7 @@ silently create a different brain. A configured but missing vault needs an expli
 choice; plain init must not discard it.
 
 After setup, run `brief` and read the resolved vault's AGENTS.md. Apply the bundled
-[second-brain skill](../second-brain/SKILL.md) to the current conversation so setup
+[memory skill](../memory/SKILL.md) to the current conversation so setup
 immediately leads into memory use. Report the vault path and project connection.
 
 Native plugin hooks (`SessionStart`, `UserPromptSubmit`, `Stop`, `SubagentStart`,

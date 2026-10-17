@@ -583,5 +583,24 @@ class PackageConsistencyTests(unittest.TestCase):
         self.assertTrue(all(re.fullmatch(r'test_[a-z0-9_]+\.py', p.name) for p in (REPO / 'tests').glob('*.py')))
 
 
+class SkillRenameTests(unittest.TestCase):
+    def test_install_replaces_our_old_second_brain_skill_links_with_memory(self):
+        with tempfile.TemporaryDirectory(prefix='second-brain-install-') as tmp:
+            home, data = Path(tmp) / 'home', Path(tmp) / 'data'
+            ours = home / '.claude/skills/second-brain'
+            foreign = home / '.agents/skills/second-brain'
+            for link, target in ((ours, data / 'current/skills/second-brain'), (foreign, Path(tmp) / 'elsewhere')):
+                link.parent.mkdir(parents=True)
+                link.symlink_to(target, target_is_directory=True)
+            result = setup.install(home=home, data_dir=data)
+            self.assertFalse(os.path.lexists(ours))  # A link the old install made is removed.
+            self.assertEqual(os.readlink(foreign), str(Path(tmp) / 'elsewhere'))  # Anything else stays.
+            for client in ('.claude', '.agents'):
+                skill = home / client / 'skills/memory'
+                self.assertIn(str(skill), result['skills'])
+                self.assertIn('name: memory\n', (skill / 'SKILL.md').read_text())
+            self.assertFalse((data / 'current/skills/second-brain').exists())
+
+
 if __name__ == '__main__':
     unittest.main()

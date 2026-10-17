@@ -1,0 +1,4 @@
+interface:
+  display_name: "second-brain memory"
+  short_description: "Shared Obsidian memory across projects and agents"
+  default_prompt: "Use the second-brain memory skill to resume this project from its shared memory."

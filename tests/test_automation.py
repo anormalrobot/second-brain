@@ -32,6 +32,7 @@ class AutomaticMemoryTests(unittest.TestCase):
         self.addCleanup(self.env.stop)
         os.environ.pop('SECOND_BRAIN_VAULT', None)
         os.environ.pop('SECOND_BRAIN_AUTOMATION', None)
+        os.environ.pop('SECOND_BRAIN_RUN', None)
         self.info = setup.initialize(self.config, self.project, mode='new', path=self.base / 'vault')
         self.root = Path(self.info['root'])
 
@@ -114,7 +115,8 @@ class AutomaticMemoryTests(unittest.TestCase):
         self.assertIn(record.stem, (self.root / hooks.records_index(self.info['project'])).read_text())
         self.assertNotIn(record.stem, (self.root / 'index.md').read_text())
         self.assertNotIn(record.stem, (self.root / 'log.md').read_text())
-        self.assertLess(body.index('Recorded user request'), body.index('Recorded assistant response'))
+        self.assertLess(body.index('### Request'), body.index('### Response'))
+        self.assertEqual(len(brain.turns(body)), 1)
         self.assert_valid()
 
     def test_fresh_session_recalls_automatically_recorded_work(self):
@@ -133,10 +135,12 @@ class AutomaticMemoryTests(unittest.TestCase):
         self.assertEqual(before, (self.root / 'log.md').read_text())
 
     def test_identical_responses_to_separate_turns_remain_distinct(self):
-        for _ in range(2):
-            self.handle('UserPromptSubmit', prompt='Another task')
-            self.handle('Stop', last_assistant_message='Done')
-        self.assertEqual(len(self.records()), 2)
+        # Clients always identify turns on Stop; without ids, identical recent responses count as one retry.
+        for number in range(2):
+            self.handle('UserPromptSubmit', prompt='Another task', turn_id=f't{number}')
+            self.handle('Stop', last_assistant_message='Done', turn_id=f't{number}')
+        record, = self.records()  # One file per session, one section per turn.
+        self.assertEqual(len(brain.turns(record.read_text())), 2)
 
     def test_continued_stop_never_blocks_or_loops(self):
         self.handle('UserPromptSubmit', prompt='A task')
@@ -239,16 +243,20 @@ class AutomaticMemoryTests(unittest.TestCase):
         native = json.loads((plugin / '.codex-plugin/plugin.json').read_text())
         self.assertEqual(native['hooks'], './hooks/hooks.json')
         manifest = json.loads((plugin / 'hooks/hooks.json').read_text())
-        self.assertEqual(set(manifest['hooks']), {'SessionStart', 'UserPromptSubmit', 'Stop'})
+        self.assertEqual(set(manifest['hooks']), {'SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStart', 'SubagentStop'})
         env = dict(os.environ, CLAUDE_PLUGIN_ROOT=str(plugin), SECOND_BRAIN_CONFIG=str(self.config),
                    PYTHONDONTWRITEBYTECODE='1')
+        subagent = {'agent_id': 'a1', 'agent_type': 'general-purpose'}
         for kind, extra in [('SessionStart', {}), ('UserPromptSubmit', {'prompt': 'Package test'}),
+                            ('SubagentStart', subagent),
+                            ('SubagentStop', dict(subagent, last_assistant_message='PACKAGED_SUBAGENT')),
                             ('Stop', {'last_assistant_message': 'PACKAGED_SUCCESS'})]:
             command = manifest['hooks'][kind][0]['hooks'][0]['command']
             proc = subprocess.run(command, shell=True, env=env, input=json.dumps(self.event(kind, **extra)),
                                   text=True, capture_output=True, check=True)
             self.assertNotIn('systemMessage', json.loads(proc.stdout))
         self.assertIn('PACKAGED_SUCCESS', brain.brief(self.root, self.info['project']))
+        self.assertIn('PACKAGED_SUBAGENT', brain.brief(self.root, self.info['project']))
         self.assert_valid()
 
     @unittest.skipUnless(shutil.which('codex'), 'Codex CLI is not installed')
@@ -280,7 +288,7 @@ class AutomaticMemoryTests(unittest.TestCase):
                 result = send({'id': 2, 'method': 'plugin/read', 'params': {
                     'marketplacePath': catalog, 'pluginName': 'second-brain'}})
                 self.assertEqual({hook['eventName'] for hook in result['plugin']['hooks']},
-                                 {'sessionStart', 'userPromptSubmit', 'stop'})
+                                 {'sessionStart', 'userPromptSubmit', 'stop', 'subagentStart', 'subagentStop'})
             finally:
                 proc.terminate()
                 proc.wait(timeout=10)

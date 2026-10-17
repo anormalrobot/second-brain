@@ -39,6 +39,7 @@ class TempCase(unittest.TestCase):
         self.addCleanup(env.stop)
         os.environ.pop('SECOND_BRAIN_VAULT', None)
         os.environ.pop('SECOND_BRAIN_AUTOMATION', None)
+        os.environ.pop('SECOND_BRAIN_RUN', None)
 
 
 class VaultCase(TempCase):
@@ -53,9 +54,9 @@ class VaultCase(TempCase):
     def event(self, kind, cwd=None, **extra):
         return {'hook_event_name': kind, 'cwd': str(cwd or self.project), 'session_id': 'fix-session', **extra}
 
-    def turn(self, prompt, response, cwd=None):
-        hooks.handle(self.event('UserPromptSubmit', cwd, prompt=prompt), self.config)
-        hooks.handle(self.event('Stop', cwd, last_assistant_message=response), self.config)
+    def turn(self, prompt, response, cwd=None, session='fix-session'):
+        hooks.handle(self.event('UserPromptSubmit', cwd, prompt=prompt, session_id=session), self.config)
+        hooks.handle(self.event('Stop', cwd, last_assistant_message=response, session_id=session), self.config)
 
     def assert_valid(self, root=None):
         self.assertEqual(check(root or self.root)[0], [])
@@ -398,8 +399,9 @@ class RecordsIndexTests(VaultCase):
     def test_records_index_replaces_index_and_log_flooding(self):
         index_before = (self.root / 'index.md').read_text()
         log_before = (self.root / 'log.md').read_text()
-        for number in range(3):
-            self.turn(f'Task {number}', f'Result {number}')
+        for number in range(3):  # Records are per session, so three sessions make three records.
+            self.turn(f'Task {number}', f'Result {number}', session=f'session-{number}')
+        self.turn('Task 3', 'Result 3', session='session-2')
         records = sorted((self.root / 'memory/sessions').glob('*-auto-*.md'))
         self.assertEqual(len(records), 3)
         relative = hooks.records_index(self.info['project'])
@@ -416,7 +418,7 @@ class RecordsIndexTests(VaultCase):
         self.assertEqual(project.count(wiki_target(self.root, relative)), 1)
         self.assertEqual(brain.frontmatter(listing)['status'], 'active')
         self.assert_valid()
-        self.assertIn('Result 2', brain.brief(self.root, self.info['project']))
+        self.assertIn('Result 3', brain.brief(self.root, self.info['project']))
 
     def test_existing_index_entries_are_preserved(self):
         index = self.root / 'index.md'

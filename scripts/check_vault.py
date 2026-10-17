@@ -18,9 +18,19 @@ MARKDOWN_LINK = re.compile(r"\[[^\]\n]*\]\(([^)\n]+)\)")
 SCHEME = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
 
 
+def marker_path(root):
+    """The brain's .second-brain.json, checked before anyone reads it: a marker that resolves outside the brain (a
+    symlink out of the vault) raises ValueError and is never opened."""
+    root = Path(root)
+    marker = root / '.second-brain.json'
+    if marker.is_symlink() and not marker.resolve().is_relative_to(root.resolve()):
+        raise ValueError('.second-brain.json: symlink escapes vault')
+    return marker
+
+
 def link_prefix(root):
     """A managed brain can occupy one visible folder in an existing Obsidian vault."""
-    marker = Path(root) / '.second-brain.json'
+    marker = marker_path(root)
     if not marker.exists():
         return ''
     config = json.loads(marker.read_text(encoding='utf-8'))
@@ -69,20 +79,35 @@ def without_examples(text):
     return "".join(result)
 
 
-def check(root):
+def contained(root, path):
+    """True when path resolves inside root (root already resolved), so reading it cannot leave the vault."""
+    return path.resolve().is_relative_to(root)
+
+
+def check(root, overlay=None, edges=None):
+    """overlay maps vault-relative paths to text checked as if written there (nothing is written). A dict passed
+    as edges receives each note's resolved link targets (wikilinks and Markdown links outside code)."""
     root = Path(root).resolve()
+    overlay = {root / name: text for name, text in (overlay or {}).items()}
     errors = []
     links = 0
     try:
         vault = root.parent if link_prefix(root) else root
     except (ValueError, OSError) as exc:
         return [str(exc)], 0, 0
-    notes = sorted(
-        p for p in root.rglob("*.md")
+    found = sorted(set(
+        p for p in [*root.rglob("*.md"), *overlay]
         if not any(part.startswith(".") for part in p.relative_to(root).parts)
         and p.relative_to(root).parts[0] != "raw"
-    )
-    edges = {p: set() for p in notes}
+    ))
+    # A note whose resolved path leaves the brain (a symlink, or one under a symlinked folder) is reported, never read.
+    notes = []
+    for p in found:
+        if p in overlay or contained(root, p):
+            notes.append(p)
+        else:
+            errors.append(f"{p.relative_to(root)}: symlink escapes vault")
+    graph = {p: set() for p in notes}
 
     def target(source, text, is_wiki, line):
         nonlocal links
@@ -99,19 +124,26 @@ def check(root):
             if is_wiki and ".." in Path(path).parts:
                 errors.append(f"{source.relative_to(root)}:{line}: wikilink must be vault-relative: {text}")
                 return
-            if is_wiki and not Path(path).suffix:
+            dotted = is_wiki and bool(Path(path).suffix)
+            if is_wiki and not dotted:
                 path += ".md"
             destination = ((vault if is_wiki else source.parent) / path).resolve()
+            if dotted and destination not in overlay and not destination.is_file():
+                # A pre-0.4 link to a dotted note dropped its .md ([[memory/projects/my.app]] for my.app.md); the
+                # runtime resolves it the same way (brain.link_relative).
+                fallback = (vault / (path + ".md")).resolve()
+                if fallback in overlay or fallback.is_file():
+                    destination = fallback
         links += 1
         if not destination.is_relative_to(vault):
             errors.append(f"{source.relative_to(root)}:{line}: target escapes vault: {text}")
-        elif not destination.is_file():
+        elif destination not in overlay and not destination.is_file():
             errors.append(f"{source.relative_to(root)}:{line}: missing target: {text}")
         else:
-            edges[source].add(destination)
+            graph[source].add(destination)
 
     for note in notes:
-        original = note.read_text(encoding="utf-8")
+        original = overlay[note] if note in overlay else note.read_text(encoding="utf-8")
         if note.relative_to(root).parts[0] in {"memory", "wiki"}:
             frontmatter = re.match(r"\A---\n(.*?)\n---(?:\n|$)", original, re.S)
             fields = dict(re.findall(r"^([a-z_]+):[ \t]*([^\n]*)$", frontmatter.group(1), re.M)) if frontmatter else {}
@@ -134,11 +166,15 @@ def check(root):
 
     claude = root / "CLAUDE.md"
     agents = root / "AGENTS.md"
-    if not claude.is_file() or claude.read_text(encoding="utf-8").strip() != "@AGENTS.md":
+    if claude.is_file() and not contained(root, claude):
+        pass  # Already reported above as escaping; never opened.
+    elif not claude.is_file() or claude.read_text(encoding="utf-8").strip() != "@AGENTS.md":
         errors.append("CLAUDE.md: expected the shared @AGENTS.md import")
-    if not agents.is_file() or not agents.read_text(encoding="utf-8").strip():
+    if agents.is_file() and not contained(root, agents):
+        pass
+    elif not agents.is_file() or not agents.read_text(encoding="utf-8").strip():
         errors.append("AGENTS.md: shared instructions are missing or empty")
-    edges.setdefault(claude, set()).add(agents)
+    graph.setdefault(claude, set()).add(agents)
 
     index = root / "index.md"
     if not index.is_file():
@@ -149,10 +185,12 @@ def check(root):
         node = pending.pop()
         if node not in visited:
             visited.add(node)
-            pending.extend(edges.get(node, ()))
+            pending.extend(graph.get(node, ()))
     for note in notes:
         if note not in visited:
             errors.append(f"{note.relative_to(root)}: unreachable from index.md")
+    if edges is not None:
+        edges.update(graph)
     return errors, len(notes), links
 
 

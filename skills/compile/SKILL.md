@@ -50,7 +50,8 @@ user's first task, or right after it if that task is urgent.
    `created`, `updated`, and `status` frontmatter on every note you write.
 5. Run `second-brain run compile --done TOKEN --updated NOTE [--updated NOTE ...]
    [--skip RECORD ...]`. Each updated note must cite at least one batch record
-   or run. Every record and run must be cited or skipped; skip a run by its
+   or run (an empty session batch from step 7 has nothing to cite, so this
+   check is skipped; the notes must still exist and validate). Every record and run must be cited or skipped; skip a run by its
    `path` (or its run id). Skip items that hold no durable content, such as
    trivial chat. A failed check changes nothing: fix the notes and run `--done`
    again. If the token is rejected, list again. A compiled run is marked in its
@@ -59,6 +60,16 @@ user's first task, or right after it if that task is urgent.
    `second-brain run compile --status` shows what is pending without starting
    a batch; its `queued` counts hook writes still waiting for the vault lock,
    which the next listing applies first.
+7. To compile only the current session's own record, after curating its work
+   yourself, list with `second-brain run compile --session KEY`, using the
+   record key the session-start context names. It lists only that session's
+   parts (an empty listing still returns a token) and no run boards. Its
+   `--done` also marks the turn running now as compiled when that turn's Stop
+   is recorded. Everything else recorded after `--done` stays pending: a
+   subagent result that arrives before that Stop, and every later turn. No turn
+   is covered when the session still had queued hook writes at `--done`, when
+   the next prompt arrives before the Stop was recorded, or when the client
+   sends no turn id with its prompts (the marker is bound to that id).
 
 Rules:
 
@@ -73,7 +84,8 @@ Rules:
   with a note such as `Superseded YYYY-MM-DD: ...` and the reason.
 - Do not copy secrets. Records are already redacted, but do not reconstruct
   redacted values.
-- Turns recorded after the listing stay pending for the next compile.
+- Turns recorded after the listing stay pending for the next compile, except
+  the turn that runs `--done` of a session's own batch (step 7).
 
 For general memory use, follow the bundled
 [memory skill](../memory/SKILL.md).

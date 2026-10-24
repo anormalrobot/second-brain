@@ -234,7 +234,10 @@ Work normally in a project where you have run `init`. The plugin:
   records, before or right after your first task. The current agent does this; no
   background model runs. You can also ask for it with `/second-brain:compile`
   in Claude Code or the `compile` skill in Codex. `run compile --status` and
-  `run doctor` show what is pending.
+  `run doctor` show what is pending. An agent that keeps the notes current
+  during its own session marks that session compiled with `run compile
+  --session KEY` (the session-start context names the key), so the next
+  session is not asked to redo it.
 - Names and dates notes using your computer's local date.
 
 Automatic records preserve what was said; they do not prove that a task succeeded.

@@ -49,6 +49,8 @@ TURN_MARK = re.compile(r'<!-- turn:(?:([0-9a-f]{24})|I=([0-9a-f]{24})?;R=([0-9a-
 SUBAGENT_MARK = re.compile(r'<!-- subagent:([0-9a-f]{24}) -->')  # A subagent result section in its parent's record.
 PROJECT_SECTIONS = ('Goal', 'Decisions', 'Status', 'Open questions', 'Next steps')
 COMPILE_LIMIT = 8
+SESSION_KEY = re.compile(r'[0-9a-f]{24}')  # Names one session's record files (memory_hooks.session_key).
+SELF_COMPILE_AGE = 86400  # Seconds a self-compile marker waits for its session's next turn.
 COMPILE_STEPS = [
     'Read each record from from_turn through through_turn: everything after the "## Turn {from_turn - 1}" section '
     '(from the top when from_turn is 1), including "## Subagent" result sections; from_turn is past through_turn '
@@ -738,6 +740,15 @@ def compile_batch(root, project):
     return internal(root, '.brain/automation/compile-' + digest(project.encode())[:24] + '.json')
 
 
+def session_queued(root, session):
+    """True while hook writes of this session wait in the spool; read-only."""
+    try:
+        files = internal_files(root, SPOOL)
+    except ValueError:
+        return False
+    return any((name := SPOOL_NAME.fullmatch(path.name)) and name[2] == session for path in files)
+
+
 def queued_writes(root, project):
     """This project's hook writes waiting in the spool for a lock holder; read-only (nothing is applied)."""
     try:
@@ -762,10 +773,24 @@ def compile_status(root, project):
             'queued': queued_writes(root, project)}
 
 
-def compile_list(root, project, limit=COMPILE_LIMIT):
+def self_marker(root, session):
+    """Where compile --done of a session's own batch leaves the turn count it covered (see records.self_compiled)."""
+    return internal(root, '.brain/automation/self-compiled-' + session + '.json')
+
+
+def turn_file(root, session):
+    """The identity of a session's current turn (the ident its Stop item carries), replaced by each UserPromptSubmit;
+    it binds a self-compile marker to the one turn that listed the batch."""
+    return internal(root, '.brain/automation/turn-' + session + '.json')
+
+
+def compile_list(root, project, limit=COMPILE_LIMIT, session=None):
+    """List a compile batch; with session, only that session's own record parts (an agent compiling its own work)."""
     root = Path(root).resolve()
     if limit < 1:
         raise ValueError('Compile limit must be at least 1')
+    if session is not None and not (isinstance(session, str) and SESSION_KEY.fullmatch(session)):
+        raise ValueError('Session must be the 24-character key the session start context names')
     project_path = scoped(root, project, area='memory/projects')
     if not project_path.is_file():
         raise ValueError('Project note does not exist')
@@ -773,8 +798,11 @@ def compile_list(root, project, limit=COMPILE_LIMIT):
         ensure_sections(project_path)
         rows = pending_records(root, project)
         boards = uncompiled_runs(root, project)  # Closed run boards are batch items too (key absent when none).
+        if session:
+            rows, boards = [row for row in rows if row['session'] == session], []
         batch_path = compile_batch(root, project)
-        if not rows and not boards:
+        # An own batch is listed even when empty: the turn running now is not recorded yet, and --done covers it.
+        if not rows and not boards and not session:
             if batch_path.exists():
                 batch_path.unlink()
             return {'records': [], 'pending_total': 0}
@@ -789,10 +817,11 @@ def compile_list(root, project, limit=COMPILE_LIMIT):
         sync_run_notes(root, [entry['run'] for entry in boards])
         token = uuid.uuid4().hex
         save_json(batch_path, {'token': token, 'project': project, 'created': timestamp(), 'records': batch,
-                               'runs': boards})
+                               'runs': boards, **({'session': session, 'turn': load_json(turn_file(root, session), {})
+                                                   .get('token')} if session else {})})
     return {'token': token, 'records': [{k: v for k, v in entry.items() if not k.startswith(('sha256', 'body_'))}
                                         for entry in batch],
-            'pending_total': pending, **({'runs': boards} if boards else {}),
+            'pending_total': pending, **({'runs': boards} if boards else {}), **({'session': session} if session else {}),
             'targets': {'project': project, 'profile': 'memory/profile.md', 'decisions': 'memory/decisions/',
                         'topics': 'wiki/topics/'},
             'instructions': COMPILE_STEPS}
@@ -824,7 +853,7 @@ def compile_done(root, project, token, updated=(), skipped=(), when=None):
             # Navigation pointers (Latest automatic record: ...) link records but do not cite them.
             body = drop_body_lines(note.read_text(encoding='utf-8'), POINTERS)
             found = {links[t] for t in link_targets(body) if t in links}
-            if not found:
+            if not found and links:
                 raise ValueError('Updated note does not cite a record of this batch: ' + relative)
             cited |= found
         skipped = [run_note(n) if RUN_ID.fullmatch(n) else n for n in skipped]  # A run may be skipped by its id.
@@ -838,7 +867,7 @@ def compile_done(root, project, token, updated=(), skipped=(), when=None):
         if issues:
             raise ValueError('Structural validation failed: ' + '; '.join(issues[:5]))
         # Prepare every change first, so a failed check leaves records and notes untouched.
-        writes = []
+        writes, session, last = [], batch.get('session'), None
         for name, entry in records.items():
             path = scoped(root, name, area='memory/sessions')
             if not path.is_file():
@@ -856,6 +885,21 @@ def compile_done(root, project, token, updated=(), skipped=(), when=None):
             if not newer:
                 fields['status'] = 'compiled'
             writes.append((path, set_fields(text, **fields)))
+            last = (name, entry['through_turn'], newer)  # Listing order is oldest first, so this ends as the newest part.
+        if session and last is None:
+            # Nothing pending (an already compiled session, or no record yet): the marker names the newest part.
+            own = [row for row in session_records(root, project) if row['session'] == session]
+            last = (own[-1]['path'], own[-1]['turns'], pending(own[-1])) if own else None
+        # A queued older Stop of this session would be applied after --done and take the marker meant for the
+        # turn running now, so a session with queued writes gets none.
+        # The marker names the turn that listed the batch: a later prompt replaces the turn token, so a marker
+        # written late (a slow --done) can never be taken by that later turn.
+        if session and batch.get('turn') and not (last and last[2]) and not session_queued(root, session):
+            # The turn running now is recorded only at its Stop; the marker lets that one turn count as compiled.
+            # A record that grew since listing gets no marker, so the new sections stay pending.
+            marker = {'project': project, 'record': last and last[0], 'through': last[1] if last else 0, 'at': time.time(),
+                      'turn': batch['turn']}
+            writes.append((self_marker(root, session), json.dumps(marker) + '\n'))
         for entry in boards.values():  # A compiled run is stamped in its own state, never listed again.
             path, data = run_state(root, entry['run'], project)
             writes.append((path, json.dumps(dict(data, compiled=when), ensure_ascii=False, indent=2) + '\n'))
@@ -865,6 +909,8 @@ def compile_done(root, project, token, updated=(), skipped=(), when=None):
         for path, text in writes:
             atomic_write(path, text)
         compiled = [name for name in [*records, *boards] if name in cited]
+        if session and not records:
+            compiled = []
         skips = [name for name in [*records, *boards] if name not in cited]
         append_log(root, f'Compiled automatic records for [[{link_target(root, project)}|{project_path.stem}]]: '
                          f'{len(compiled)} compiled, {len(skips)} skipped; updated ' +
@@ -1541,7 +1587,7 @@ def main(argv=None, prog=None):
     p = add('finish'); p.add_argument('source'); p.add_argument('--token', required=True); p.add_argument('--output', action='append'); p.add_argument('--error')
     p = add('checkpoint'); p.add_argument('--project', required=True); p.add_argument('--summary', required=True); p.add_argument('--next', required=True); p.add_argument('--evidence', action='append', required=True); p.add_argument('--id'); p.add_argument('--date'); p.add_argument('--complete', action='store_true')
     p = add('brief'); p.add_argument('--project'); p.add_argument('--limit', type=int, default=6000)
-    p = add('compile'); p.add_argument('--project', required=True); p.add_argument('--limit', type=int, default=COMPILE_LIMIT); p.add_argument('--status', action='store_true'); p.add_argument('--done', metavar='TOKEN'); p.add_argument('--updated', action='append', default=[], metavar='NOTE'); p.add_argument('--skip', action='append', default=[], metavar='RECORD'); p.add_argument('--date')
+    p = add('compile'); p.add_argument('--project', required=True); p.add_argument('--limit', type=int, default=COMPILE_LIMIT); p.add_argument('--status', action='store_true'); p.add_argument('--done', metavar='TOKEN'); p.add_argument('--updated', action='append', default=[], metavar='NOTE'); p.add_argument('--skip', action='append', default=[], metavar='RECORD'); p.add_argument('--date'); p.add_argument('--session', metavar='KEY', help="List only this session's own records")
     p = add('search'); p.add_argument('query'); p.add_argument('--limit', type=int, default=8)
     p = add('doctor'); p.add_argument('--as-of'); p.add_argument('--stale-days', type=int, default=90)
     p = add('consolidate'); p.add_argument('--source', required=True); p.add_argument('--target', required=True); p.add_argument('--text-file', type=Path, required=True); p.add_argument('--evidence', action='append', required=True); p.add_argument('--expected-sha', required=True); p.add_argument('--date')
@@ -1560,12 +1606,14 @@ def main(argv=None, prog=None):
         elif args.command == 'checkpoint': result = checkpoint(root, args.project, args.summary, args.next, args.evidence, checkpoint_id=args.id, when=args.date, complete=args.complete)
         elif args.command == 'brief': print(brief(root, args.project, args.limit)); return 0
         elif args.command == 'compile':
-            if args.status and (args.done is not None or args.updated or args.skip):
-                raise ValueError('--status cannot be combined with --done, --updated, or --skip')
+            if args.status and (args.done is not None or args.updated or args.skip or args.session):
+                raise ValueError('--status cannot be combined with --done, --updated, --skip, or --session')
             if args.status: result = compile_status(root, args.project)
-            elif args.done is not None: result = compile_done(root, args.project, args.done, args.updated, args.skip, args.date)
+            elif args.done is not None:
+                if args.session: raise ValueError('--session applies to the listing; --done uses its TOKEN')
+                result = compile_done(root, args.project, args.done, args.updated, args.skip, args.date)
             elif args.updated or args.skip: raise ValueError('--updated and --skip require --done TOKEN')
-            else: result = compile_list(root, args.project, args.limit)
+            else: result = compile_list(root, args.project, args.limit, args.session)
         elif args.command == 'search': result = search(root, args.query, args.limit)
         elif args.command == 'doctor': result = doctor(root, args.as_of, args.stale_days)
         elif args.command == 'consolidate': result = consolidate(root, args.source, args.target, args.text_file.read_text(encoding='utf-8'), args.evidence, args.expected_sha, args.date)

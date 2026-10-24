@@ -6,6 +6,7 @@ write applied late is deduplicated exactly like a retried hook.
 """
 from pathlib import Path
 import re
+import time
 
 try:
     from . import brain
@@ -186,6 +187,25 @@ def checked(root, item):
     return state_file(root, item['state'])
 
 
+def self_compiled(root, key, project, relative, count, ident):
+    """Consume this session's self-compile marker (brain.compile_done of its own batch); the caller holds the lock.
+
+    True when the turn being appended is the one that listed and ran compile --done: the marker carries that turn's
+    identity (brain.turn_file), which must equal the appended Stop's own ident, so neither a delayed earlier Stop nor
+    a later turn can take it. It also names this project and part (None when no part existed,
+    matching only a session's first part) and the turn count --done covered, and it is fresh. Any new section
+    consumes the marker, so a subagent result arriving after --done, or a later turn, stays pending.
+    """
+    path = brain.self_marker(root, key)
+    if not path.is_file():
+        return False
+    marker = brain.load_json(path, {})
+    path.unlink()
+    return (bool(ident) and isinstance(marker, dict) and marker.get('project') == project and marker.get('turn') == ident
+            and marker.get('record') == relative and marker.get('through') == count
+            and isinstance(marker.get('at'), (int, float)) and 0 <= time.time() - marker['at'] < brain.SELF_COMPILE_AGE)
+
+
 def write_entry(root, item):
     """Append a turn or subagent section to its session's current record part; the caller holds the lock.
 
@@ -219,6 +239,9 @@ def write_entry(root, item):
     if not found:
         count = len(own)
         when = brain.day()
+        # Matched against the part as --done saw it, before a rollover below starts a new part.
+        marked = self_compiled(root, key, project, relative if text else None, count,
+                               item.get('ident') if item['kind'] == 'turn' else '')
         if text and len(text) + len(heading(count + 1)) + len(body) > brain.RECORD_LIMIT:
             relative = next_part(relative)
             target = brain.scoped(root, relative, area='memory/sessions')
@@ -230,6 +253,9 @@ def write_entry(root, item):
             if run and brain.frontmatter(text).get('run') != run:
                 fields['run'] = run
             text = brain.set_fields(text, **fields)
+        if marked:
+            # The agent folded this session into curated notes during this turn (compile --session, then --done).
+            text = brain.set_fields(text, status='compiled', compiled_through=count + 1, compiled=when)
         brain.atomic_write(target, text.rstrip('\n') + '\n' + heading(count + 1) + body)
     # Navigation is ensured before the entry is acknowledged (state, receipt, spool deletion), on the duplicate path
     # too: a retry after a failure between these writes completes the links instead of leaving them missing.

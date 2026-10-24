@@ -310,6 +310,10 @@ def automation(config, cwd, mode='status'):
                 for pending in brain.internal_files(info['root'], '.brain/automation', 'session-*.json'):
                     if brain.load_json(pending, {}).get('project') == info['project']:
                         pending.unlink()
+                for marker in (*brain.internal_files(info['root'], '.brain/automation', 'self-compiled-*.json'),
+                               *brain.internal_files(info['root'], '.brain/automation', 'turn-*.json')):
+                    if brain.load_json(marker, {}).get('project') == info['project']:
+                        marker.unlink()
                 runs.discard(info['root'], info['project'])  # Writes still waiting for the lock are pending too.
     return {'enabled': info['automatic_memory'], 'project': info['project'],
             'events': brain.load_json(automation_receipt(info), {}),

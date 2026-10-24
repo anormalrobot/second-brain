@@ -399,6 +399,201 @@ class NudgeTests(CompileCase):
 
 
 
+class SelfCompileTests(CompileCase):
+    """An agent that curates its own session marks it compiled, including the turn that ran compile --done."""
+
+    def handle(self, kind, session='s1', cwd=None, **extra):
+        # Like Claude Code, each prompt carries a prompt_id that its Stop repeats.
+        current = self.__dict__.setdefault('prompts', {})
+        if kind == 'UserPromptSubmit':
+            current[session] = extra.setdefault('prompt_id', f'prompt-{len(self.__dict__.setdefault("ids", []))}')
+            self.ids.append(current[session])
+        elif kind == 'Stop' and session in current:
+            extra.setdefault('prompt_id', current[session])
+        return super().handle(kind, session, cwd, **extra)
+
+    def key(self, session):
+        text = self.handle('SessionStart', session, source='startup')['hookSpecificOutput']['additionalContext']
+        return re.search(r"This session's record key: ([0-9a-f]{24})\.", text)[1]
+
+    def meta(self, record):
+        return brain.frontmatter((self.root / record).read_text())
+
+    def self_compile(self, session, cite=True):
+        code, listing = self.run_cli('compile', '--session', self.key(session))
+        self.assertEqual(code, 0, listing)
+        if cite and listing['records']:
+            self.cite(*[r['path'] for r in listing['records']])
+        code, done = self.run_cli('compile', '--done', listing['token'], '--updated', self.info['project'])
+        self.assertEqual(code, 0, done)
+        return listing, done
+
+    def test_own_session_is_compiled_through_the_turn_that_ran_done(self):
+        self.turn('earlier task', 'other session work', session='other')
+        self.turn('Use SQLite for storage.', 'Agreed.', session='me')
+        self.turn('Add an index.', 'Index added.', session='me')
+        self.handle('UserPromptSubmit', 'me', prompt='Save this to memory.')
+        listing, done = self.self_compile('me')
+        record, = [r['path'] for r in listing['records']]  # Only this session's record, never another's.
+        self.assertEqual((listing['session'], listing['records'][0]['through_turn']), (self.key('me'), 2))
+        self.assertNotIn('runs', listing)
+        self.assertEqual(done['compiled'], [record])
+        self.assertEqual(self.meta(record)['compiled_through'], '2')
+        self.handle('Stop', 'me', last_assistant_message='Saved; the notes are up to date.')
+        meta = self.meta(record)
+        self.assertEqual((meta['status'], meta['compiled_through'], meta['compiled']), ('compiled', '3', brain.day()))
+        self.assertFalse(brain.self_marker(self.root, self.key('me')).exists())
+        status = brain.compile_status(self.root, self.info['project'])
+        self.assertEqual([r['path'] for r in status['records']], [self.rel(r) for r in self.records() if self.rel(r) != record])
+        self.assertIn(NUDGE + ' 1 automatic record(s)', self.handle('SessionStart', 'new')['hookSpecificOutput']['additionalContext'])
+        # The marker covered one turn only: the next turn is pending again.
+        self.turn('One more thing.', 'Done.', session='me')
+        self.assertEqual((self.meta(record)['status'], self.meta(record)['compiled_through']), ('recorded', '3'))
+        self.assert_valid()
+
+    def test_self_compile_in_consecutive_turns(self):
+        self.turn('first', 'one', session='me')
+        record = self.rel(self.records()[0])
+        for number in (2, 3):  # The second listing is empty (all compiled) yet still covers its own turn.
+            self.handle('UserPromptSubmit', 'me', prompt=f'task {number}')
+            listing, _ = self.self_compile('me')
+            self.handle('Stop', 'me', last_assistant_message=f'answer {number}')
+            self.assertEqual((self.meta(record)['status'], self.meta(record)['compiled_through']), ('compiled', str(number)))
+        self.assertEqual(listing['records'], [])
+
+    def test_first_turn_self_compile_before_any_record_exists(self):
+        self.handle('UserPromptSubmit', 'fresh', prompt='Decide the storage.')
+        listing, done = self.self_compile('fresh')
+        self.assertEqual((listing['records'], done['compiled']), ([], []))
+        self.handle('Stop', 'fresh', last_assistant_message='Decided and saved.')
+        record, = self.records()
+        meta = self.meta(self.rel(record))
+        self.assertEqual((meta['status'], meta['compiled_through']), ('compiled', '1'))
+        self.assertEqual(brain.compile_status(self.root, self.info['project'])['pending_total'], 0)
+
+    def test_marker_is_one_shot_fresh_and_dropped_by_later_sections(self):
+        self.turn('first', 'one', session='me')
+        record = self.rel(self.records()[0])
+        # A subagent result arriving after --done was not folded in: the turn stays pending.
+        self.handle('UserPromptSubmit', 'me', prompt='second')
+        self.self_compile('me')
+        self.handle('SubagentStop', 'me', agent_id='agent1', agent_type='Explore', last_assistant_message='Found it.')
+        self.handle('Stop', 'me', last_assistant_message='two')
+        self.assertEqual((self.meta(record)['status'], self.meta(record)['compiled_through']), ('recorded', '1'))
+        # A marker past its age is not honoured, even by its own turn.
+        self.handle('UserPromptSubmit', 'me', prompt='later')
+        self.self_compile('me')
+        marker = brain.self_marker(self.root, self.key('me'))
+        data = json.loads(marker.read_text())
+        marker.write_text(json.dumps(dict(data, at=data['at'] - brain.SELF_COMPILE_AGE - 1)))
+        self.handle('Stop', 'me', last_assistant_message='three')
+        self.assertEqual((self.meta(record)['status'], self.meta(record)['compiled_through']), ('recorded', '2'))
+        self.assertFalse(marker.exists())
+        # A turn recorded between listing and --done gets no marker, so it and the next turn stay pending.
+        self.handle('UserPromptSubmit', 'me', prompt='list')
+        listing = self.run_cli('compile', '--session', self.key('me'))[1]
+        self.cite(record)
+        self.turn('meanwhile', 'four', session='me')
+        self.assertEqual(self.run_cli('compile', '--done', listing['token'], '--updated', self.info['project'])[0], 0)
+        self.assertFalse(marker.exists())
+        self.assertEqual((self.meta(record)['status'], self.meta(record)['compiled_through']), ('recorded', '3'))
+
+    def test_abandoned_marker_never_marks_the_next_turn(self):
+        self.turn('first', 'one', session='me')
+        record = self.rel(self.records()[0])
+        self.handle('UserPromptSubmit', 'me', prompt='curate')
+        self.self_compile('me')  # This turn's Stop is never delivered.
+        marker = brain.self_marker(self.root, self.key('me'))
+        self.assertTrue(marker.exists())
+        self.turn('next task, not curated', 'two', session='me')
+        self.assertFalse(marker.exists())
+        self.assertEqual((self.meta(record)['status'], self.meta(record)['compiled_through']), ('recorded', '1'))
+
+    def test_no_marker_while_the_session_has_queued_writes(self):
+        self.turn('first', 'one', session='me')
+        key = self.key('me')
+        spooled = brain.internal(self.root, brain.SPOOL) / f'{1:020d}-{key}-{"0" * 32}.json'
+        spooled.parent.mkdir(parents=True, exist_ok=True)
+        spooled.write_text('{}')
+        other = brain.internal(self.root, brain.SPOOL) / f'{2:020d}-{"e" * 24}-{"0" * 32}.json'
+        other.write_text('{}')
+        listing = brain.compile_list(self.root, self.info['project'], session=key)
+        self.cite(*[r['path'] for r in listing['records']])
+        brain.compile_done(self.root, self.info['project'], listing['token'], [self.info['project']])
+        self.assertFalse(brain.self_marker(self.root, key).exists())
+        spooled.unlink()  # Another session's queued writes do not matter.
+        listing = brain.compile_list(self.root, self.info['project'], session=key)
+        brain.compile_done(self.root, self.info['project'], listing['token'], [self.info['project']])
+        self.assertTrue(brain.self_marker(self.root, key).exists())
+
+    def test_expired_markers_are_swept_and_automation_off_removes_markers(self):
+        self.turn('first', 'one', session='me')
+        self.self_compile('me')
+        marker = brain.self_marker(self.root, self.key('me'))
+        old = marker.stat().st_mtime - brain.SELF_COMPILE_AGE - 10
+        os.utime(marker, (old, old))
+        self.handle('SessionStart', 'someone-else', source='startup')
+        self.assertFalse(marker.exists())
+        self.self_compile('me')
+        self.assertTrue(marker.exists())
+        setup.automation(self.config, self.project, 'off')
+        self.assertFalse(marker.exists())
+
+    def test_a_late_marker_from_an_earlier_turn_is_never_taken(self):
+        self.turn('first', 'one', session='me')
+        record = self.rel(self.records()[0])
+        self.handle('UserPromptSubmit', 'me', prompt='curate')
+        listing = self.run_cli('compile', '--session', self.key('me'))[1]
+        self.cite(record)
+        # A slow --done of that turn finishes only after the next prompt (whose hook could not wait for the lock).
+        self.handle('UserPromptSubmit', 'me', prompt='next task, not curated')
+        self.assertEqual(self.run_cli('compile', '--done', listing['token'], '--updated', self.info['project'])[0], 0)
+        self.handle('Stop', 'me', last_assistant_message='two')
+        self.assertEqual((self.meta(record)['status'], self.meta(record)['compiled_through']), ('recorded', '1'))
+        self.assertFalse(brain.self_marker(self.root, self.key('me')).exists())
+
+    def test_rollover_keeps_the_self_compiled_turn(self):
+        self.turn('first', 'one', session='me')
+        self.handle('UserPromptSubmit', 'me', prompt='curate')
+        self.self_compile('me')
+        with patch.object(brain, 'RECORD_LIMIT', 10):  # The next turn starts part 2.
+            self.handle('Stop', 'me', last_assistant_message='Saved.')
+        first, second = sorted(self.records(), key=lambda p: (len(p.name), p.name))
+        self.assertTrue(second.name.endswith('-2.md'))
+        meta = self.meta(self.rel(second))
+        self.assertEqual((meta['status'], meta['compiled_through']), ('compiled', '1'))
+        self.assertEqual(brain.compile_status(self.root, self.info['project'])['pending_total'], 0)
+
+    def test_a_delayed_earlier_stop_never_takes_the_current_turns_marker(self):
+        self.turn('first', 'one', session='me')
+        record = self.rel(self.records()[0])
+        self.handle('UserPromptSubmit', 'me', prompt='turn A', prompt_id='A')  # A's Stop is delayed.
+        self.handle('UserPromptSubmit', 'me', prompt='turn B, curates', prompt_id='B')
+        self.self_compile('me')
+        self.handle('Stop', 'me', last_assistant_message='A, not curated', prompt_id='A')
+        self.assertEqual((self.meta(record)['status'], self.meta(record)['compiled_through']), ('recorded', '1'))
+
+    def test_without_client_turn_ids_no_turn_is_marked(self):
+        self.turn('first', 'one', session='me', prompt_id='x')
+        record = self.rel(self.records()[0])
+        CompileCase.handle(self, 'UserPromptSubmit', 'me', prompt='curate')  # A client that sends no ids.
+        self.self_compile('me')
+        self.assertFalse(brain.self_marker(self.root, self.key('me')).exists())
+        CompileCase.handle(self, 'Stop', 'me', last_assistant_message='Saved.')
+        self.assertEqual((self.meta(record)['status'], self.meta(record)['compiled_through']), ('recorded', '1'))
+
+    def test_session_option_is_validated(self):
+        self.turn('first', 'one', session='me')
+        for args in (['compile', '--session', 'not-a-key'], ['compile', '--status', '--session', self.key('me')],
+                     ['compile', '--done', 'x', '--session', self.key('me'), '--updated', self.info['project']]):
+            code, result = self.run_cli(*args)
+            self.assertNotEqual(code, 0, args)
+        # An empty own batch still requires an updated note that exists and passes validation.
+        listing = self.run_cli('compile', '--session', 'f' * 24)[1]
+        self.assertEqual(listing['records'], [])
+        self.assertNotEqual(self.run_cli('compile', '--done', listing['token'], '--updated', 'memory/missing.md')[0], 0)
+        self.assertFalse(brain.self_marker(self.root, 'f' * 24).exists())
+
 class FixRoundTests(CompileCase):
     """Regressions from the phase-2 review; each failed before its fix."""
 

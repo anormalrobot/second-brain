@@ -152,6 +152,10 @@ def load_context(info, event, own=()):
         'run checkpoint --summary "..." --next "..." --evidence VAULT_RELATIVE_PATH. File a reusable answer: '
         'run file-answer --title "..." --text-file FILE --source VAULT_RELATIVE_PATH. '
         'Pause/resume automatic memory: automation off / automation on.\n'
+        'This session\'s record key: ' + session_key(info, event) + '. When you fold this session\'s own work '
+        'into the curated notes, mark it compiled so a later session is not asked to redo it: run compile --session '
+        'KEY, cite each listed record in a note you updated, then run compile --done TOKEN --updated NOTE '
+        '(it also covers the turn you run it in).\n'
     )
     # Compaction happens mid-task, so only a fresh, resumed, or cleared session is nudged to compile. The
     # unprimed UserPromptSubmit fallback stands in for a SessionStart the client never delivered.
@@ -329,6 +333,14 @@ def prune_sessions(root, current):
                 path.unlink()
         except FileNotFoundError:
             pass
+    expired = time.time() - brain.SELF_COMPILE_AGE  # Past this age a marker is never honoured.
+    for path in (*brain.internal_files(root, '.brain/automation', 'self-compiled-*.json'),
+                 *brain.internal_files(root, '.brain/automation', 'turn-*.json')):
+        try:
+            if path.stat().st_mtime < (expired if path.name.startswith('self-') else cutoff):
+                path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def handle(event, config=None):
@@ -401,7 +413,17 @@ def handle(event, config=None):
         if paths is not None:
             state.update(primed=True, brief_paths=paths, run=data.get('run'))
         if kind == 'UserPromptSubmit':
-            client = event.get('turn_id') or event.get('prompt_id')
+            # A new turn begins: a self-compile marker still waiting belongs to an earlier turn whose Stop never
+            # came, so it must not mark this one compiled.
+            key, client = session_key(info, event), event.get('turn_id') or event.get('prompt_id')
+            # The turn's identity as its Stop item will carry it (turn_item's ident); without a client id there is
+            # none, and self-compile marks no turn.
+            if client:
+                brain.save_json(brain.turn_file(root, key), {'project': info['project'],
+                                                             'token': brain.digest((key + '\0' + str(client)).encode())[:24]})
+            else:
+                brain.turn_file(root, key).unlink(missing_ok=True)
+            brain.self_marker(root, key).unlink(missing_ok=True)
             state.update(prompt=excerpt(prompt), notification=notice, turn=client or uuid.uuid4().hex,
                          turn_source='client' if client else 'generated')
         elif locked:

@@ -1,5 +1,5 @@
 """Regression coverage for locking, redaction, records, guards, and vault operations (temp dirs only)."""
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 import io
 import json
@@ -551,6 +551,24 @@ class GuardTests(VaultCase):
         for argv in (['scan', '--roo', '/tmp'], ['brief', '--proj=x'], ['scan', '--root=/x'], ['brief', '--pro', 'x']):
             with self.assertRaisesRegex(ValueError, 'Routed operations'):
                 setup.run_operation(self.config, self.project, None, argv)
+
+    def test_routed_help_omits_the_flags_the_router_rejects(self):
+        # An agent read --project as required in run checkpoint --help, passed it, and was rejected every time.
+        for command in (['--help'], ['checkpoint', '--help'], ['compile', '--help'], ['brief', '--help']):
+            out = io.StringIO()
+            with redirect_stdout(out), self.assertRaises(SystemExit):
+                setup.run_operation(self.config, self.project, None, command)
+            usage = out.getvalue().split('\n\n')[0]
+            self.assertNotIn('--project', usage, command)
+            self.assertNotIn('--root', usage, command)
+        out = io.StringIO()
+        with redirect_stdout(out), self.assertRaises(SystemExit):
+            brain.main(['checkpoint', '--help'])
+        self.assertIn('--project PROJECT', out.getvalue())  # Direct calls still need it.
+        with redirect_stdout(io.StringIO()):
+            setup.run_operation(self.config, self.project, None,
+                                ['checkpoint', '--summary', 's', '--next', 'n', '--evidence', 'memory/profile.md'])
+        self.assertTrue(list((self.root / 'memory/sessions').glob('*-project-*.md')))
 
     def test_session_state_pruning_keeps_current_session(self):
         automation = self.root / '.brain/automation'

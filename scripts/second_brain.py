@@ -562,7 +562,8 @@ def run_operation(config, cwd, vault, arguments):
     # Reject every argparse-style prefix as well, so abbreviations cannot bypass the guard.
     if any(len(a.split('=')[0]) >= 3 and any(f.startswith(a.split('=')[0]) for f in ('--root', '--project'))
            for a in extra):
-        raise ValueError('Routed operations use the selected vault and bound project; use init or --vault to change them')
+        raise ValueError('Routed operations use the selected vault and bound project; omit --root and --project '
+                         '(use init or --vault to change them)')
     if extra[:1] == ['restore']:
         return brain.main(extra, prog='second-brain run')  # Archive + destination suffice, even if the vault is gone.
     info = context(config, cwd, vault)

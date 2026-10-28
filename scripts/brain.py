@@ -1578,16 +1578,19 @@ def main(argv=None, prog=None):
     parser = argparse.ArgumentParser(prog=prog, description=__doc__, allow_abbrev=False,
                                      epilog='Through second-brain run, --root and --project come from the selected vault and '
                                             'bound project. It also routes board, a shared run board (run board --help).')
-    parser.add_argument('--root', type=Path, help='Brain root (second-brain run supplies it); required except for restore')
+    # Routed calls get --root and --project from the router; listing them would invite the flags it rejects.
+    routed = prog == 'second-brain run'
+    bound = {'help': argparse.SUPPRESS} if routed else {}
+    parser.add_argument('--root', type=Path, help=argparse.SUPPRESS if routed else 'Brain root (second-brain run supplies it); required except for restore')
     sub = parser.add_subparsers(dest='command', required=True)
     add = lambda name: sub.add_parser(name, help=HELP[name], allow_abbrev=False)
     for name in ('scan', 'coverage'):
         add(name)
     p = add('begin'); p.add_argument('source')
     p = add('finish'); p.add_argument('source'); p.add_argument('--token', required=True); p.add_argument('--output', action='append'); p.add_argument('--error')
-    p = add('checkpoint'); p.add_argument('--project', required=True); p.add_argument('--summary', required=True); p.add_argument('--next', required=True); p.add_argument('--evidence', action='append', required=True); p.add_argument('--id'); p.add_argument('--date'); p.add_argument('--complete', action='store_true')
-    p = add('brief'); p.add_argument('--project'); p.add_argument('--limit', type=int, default=6000)
-    p = add('compile'); p.add_argument('--project', required=True); p.add_argument('--limit', type=int, default=COMPILE_LIMIT); p.add_argument('--status', action='store_true'); p.add_argument('--done', metavar='TOKEN'); p.add_argument('--updated', action='append', default=[], metavar='NOTE'); p.add_argument('--skip', action='append', default=[], metavar='RECORD'); p.add_argument('--date'); p.add_argument('--session', metavar='KEY', help="List only this session's own records")
+    p = add('checkpoint'); p.add_argument('--project', **bound, required=True); p.add_argument('--summary', required=True); p.add_argument('--next', required=True); p.add_argument('--evidence', action='append', required=True); p.add_argument('--id'); p.add_argument('--date'); p.add_argument('--complete', action='store_true')
+    p = add('brief'); p.add_argument('--project', **bound); p.add_argument('--limit', type=int, default=6000)
+    p = add('compile'); p.add_argument('--project', **bound, required=True); p.add_argument('--limit', type=int, default=COMPILE_LIMIT); p.add_argument('--status', action='store_true'); p.add_argument('--done', metavar='TOKEN'); p.add_argument('--updated', action='append', default=[], metavar='NOTE'); p.add_argument('--skip', action='append', default=[], metavar='RECORD'); p.add_argument('--date'); p.add_argument('--session', metavar='KEY', help="List only this session's own records")
     p = add('search'); p.add_argument('query'); p.add_argument('--limit', type=int, default=8)
     p = add('doctor'); p.add_argument('--as-of'); p.add_argument('--stale-days', type=int, default=90)
     p = add('consolidate'); p.add_argument('--source', required=True); p.add_argument('--target', required=True); p.add_argument('--text-file', type=Path, required=True); p.add_argument('--evidence', action='append', required=True); p.add_argument('--expected-sha', required=True); p.add_argument('--date')

@@ -553,6 +553,8 @@ def install(home=None, data_dir=None, command_only=False):
 
 
 BOARD_WRITES = ('open', 'add', 'claim', 'post', 'release', 'close')
+# Routed operations that are not also top-level commands (brief is both; the top-level form adds context).
+ROUTED_ONLY = (frozenset(brain.HELP) | {'board'}) - {'brief'}
 
 
 def run_operation(config, cwd, vault, arguments):
@@ -584,6 +586,29 @@ def run_operation(config, cwd, vault, arguments):
     return brain.main(['--root', info['root'], *extra], prog='second-brain run')
 
 
+GLOBAL_OPTIONS = ('--config', '--cwd', '--vault')
+
+
+def implied_run(argv):
+    """Insert `run` before a memory operation named without it (`checkpoint ...` means `run checkpoint ...`).
+
+    Agents read "run checkpoint" in hook text as an English verb plus a command, so the bare form is accepted.
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    index = 0
+    while index < len(argv):
+        word = argv[index]
+        if word in GLOBAL_OPTIONS:
+            index += 2
+        elif word.split('=')[0] in GLOBAL_OPTIONS:
+            index += 1
+        else:
+            break
+    if index < len(argv) and argv[index] in ROUTED_ONLY:
+        argv.insert(index, 'run')
+    return argv
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Start with init to choose a shared Obsidian vault and connect this project.',
         epilog='Advanced compatibility commands: create, connect, bind, unbind, use. Run COMMAND --help for details.',
@@ -613,7 +638,7 @@ def main(argv=None):
     p.add_argument('mode', nargs='?', default='status', choices=('status', 'on', 'off'))
     p = sub.add_parser('run', add_help=False, help='Run a memory operation', allow_abbrev=False); p.add_argument('-h', '--help', action='store_true'); p.add_argument('arguments', nargs=argparse.REMAINDER)
     p = sub.add_parser('launch', help='Start Codex or Claude Code with vault access', allow_abbrev=False); p.add_argument('--dry-run', action='store_true'); p.add_argument('--run', help='Run board id for SECOND_BRAIN_RUN (a CLI worker)'); p.add_argument('client', choices=('codex', 'claude')); p.add_argument('arguments', nargs=argparse.REMAINDER)
-    args = parser.parse_args(argv)
+    args = parser.parse_args(implied_run(argv))
     config = args.config.expanduser().resolve()
     try:
         if args.command == 'run':

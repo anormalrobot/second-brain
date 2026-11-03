@@ -274,7 +274,7 @@ class SubagentStopTests(OrchestrationCase):
 
     def test_replay_after_500_turns_and_a_rollover_changes_nothing(self):
         self.subagent_stop('EARLY_FINDING')
-        with patch.object(os, 'fsync', lambda fd: None):
+        with patch.object(os, 'fsync', lambda fd: None), patch.object(brain, 'RECORD_LIMIT', 10 ** 7):  # One long part.
             for number in range(510):
                 self.handle('Stop', last_assistant_message=f'r{number}', prompt_id=f'p-{number}')
             first, = self.records()

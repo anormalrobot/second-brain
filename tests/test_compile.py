@@ -805,7 +805,7 @@ class FixRound3Tests(CompileCase):
         self.assertIn('second answer', record.read_text())
 
     def test_retry_of_recent_turn_after_a_600_turn_part_rolls_over(self):
-        with patch.object(os, 'fsync', lambda fd: None):
+        with patch.object(os, 'fsync', lambda fd: None), patch.object(brain, 'RECORD_LIMIT', 10 ** 7):  # One long part.
             for number in range(1, 601):
                 self.handle('Stop', last_assistant_message=f'r{number}', prompt_id=f'p-{number}')
             record, = self.records()

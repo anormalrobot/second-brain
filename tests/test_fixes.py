@@ -570,6 +570,25 @@ class GuardTests(VaultCase):
                                 ['checkpoint', '--summary', 's', '--next', 'n', '--evidence', 'memory/profile.md'])
         self.assertTrue(list((self.root / 'memory/sessions').glob('*-project-*.md')))
 
+    def test_memory_operation_without_run_is_routed(self):
+        # An agent read "run checkpoint" in the hook text as a verb and called checkpoint directly.
+        self.assertEqual(setup.implied_run(['--cwd', '/x', '--config=/c', 'checkpoint', '--next', 'n']),
+                         ['--cwd', '/x', '--config=/c', 'run', 'checkpoint', '--next', 'n'])
+        for argv in (['run', 'search', 'q'], ['brief'], ['automation', 'off'], ['--vault', 'compile', 'status']):
+            self.assertEqual(setup.implied_run(argv), argv)
+        self.assertEqual(setup.implied_run(['board', 'list'])[:2], ['run', 'board'])
+        with redirect_stdout(io.StringIO()):
+            code = setup.main(['--config', str(self.config), '--cwd', str(self.project), 'checkpoint',
+                               '--summary', 's', '--next', 'n', '--evidence', 'memory/profile.md'])
+        self.assertEqual(code, 0)
+        self.assertTrue(list((self.root / 'memory/sessions').glob('*-project-*.md')))
+
+    def test_hook_commands_are_quoted_whole(self):
+        instructions = hooks.load_context(self.info, self.event('SessionStart'))[0]
+        for command in ('`run checkpoint ', '`run search ', '`run compile --session ', '`run file-answer '):
+            self.assertIn(command, instructions)
+        self.assertNotIn('run `compile', instructions)
+
     def test_session_state_pruning_keeps_current_session(self):
         automation = self.root / '.brain/automation'
         automation.mkdir(parents=True, exist_ok=True)

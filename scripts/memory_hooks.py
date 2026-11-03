@@ -148,13 +148,14 @@ def load_context(info, event, own=()):
         'If the user asks not to remember this work, run automation off before proceeding. '
         'Respect client file permissions; report denied memory writes without bypassing them.\n'
         'Bundled command: ' + command + '\n'
-        'Read more: brief; run search "terms". Save a curated handoff: '
-        'run checkpoint --summary "..." --next "..." --evidence VAULT_RELATIVE_PATH. File a reusable answer: '
-        'run file-answer --title "..." --text-file FILE --source VAULT_RELATIVE_PATH. '
-        'Pause/resume automatic memory: automation off / automation on.\n'
+        'Append each subcommand below to the bundled command; `run` is part of the subcommand. '
+        'Read more: `brief`; `run search "terms"`. Save a curated handoff: '
+        '`run checkpoint --summary "..." --next "..." --evidence VAULT_RELATIVE_PATH`. File a reusable answer: '
+        '`run file-answer --title "..." --text-file FILE --source VAULT_RELATIVE_PATH`. '
+        'Pause/resume automatic memory: `automation off` / `automation on`.\n'
         'This session\'s record key: ' + session_key(info, event) + '. When you fold this session\'s own work '
-        'into the curated notes, mark it compiled so a later session is not asked to redo it: run compile --session '
-        'KEY, cite each listed record in a note you updated, then run compile --done TOKEN --updated NOTE '
+        'into the curated notes, mark it compiled so a later session is not asked to redo it: `run compile --session '
+        'KEY`, cite each listed record in a note you updated, then `run compile --done TOKEN --updated NOTE` '
         '(it also covers the turn you run it in).\n'
     )
     # Compaction happens mid-task, so only a fresh, resumed, or cleared session is nudged to compile. The
@@ -167,12 +168,12 @@ def load_context(info, event, own=()):
                 f'Compile pending: {len(rows)} automatic record(s) from other sessions'
                 + (f' and {len(boards)} closed run board(s)' if boards else '') + ' are not yet compiled'
                 + (f' (oldest {rows[0]["created"] or "undated"})' if rows else '') + '. Before the user\'s first task '
-                '(or right after it if the task is urgent), run `compile`, fold durable facts into the curated notes '
+                '(or right after it if the task is urgent), `run compile`, fold durable facts into the curated notes '
                 '(project note sections, profile only for preferences the user stated, memory/decisions/ for accepted '
                 'decisions, wiki/topics/ for reusable cross-project knowledge), cite the records as evidence, '
-                'then run `compile --done`. Do not ask the user; skip records with no durable content. '
-                'Use the bundled command: run compile; then run compile --done TOKEN --updated NOTE '
-                '[--updated NOTE ...] [--skip RECORD ...].\n')
+                'then `run compile --done`. Do not ask the user; skip records with no durable content. '
+                'Use the bundled command: `run compile`; then `run compile --done TOKEN --updated NOTE '
+                '[--updated NOTE ...] [--skip RECORD ...]`.\n')
     worker, _, warning = runs.hook_runs(root, info['project'], board=False)
     instructions += (warning + '\n') if warning else (runs.usage(command, worker['run']) if worker else '')
     instructions += (

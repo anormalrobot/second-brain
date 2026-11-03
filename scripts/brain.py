@@ -40,7 +40,7 @@ RUN_ID = re.compile(r'\d{4}-\d\d-\d\d-[a-z0-9-]{1,32}-[0-9a-f]{6}')  # DATE-slug
 KEPT_STATE = re.compile(r'\.brain/(?:runs/' + RUN_ID.pattern + r'|automation/active-run-[0-9a-f]{24})\.json')
 RECORD_NAME = re.compile(r'(\d{4}-\d\d-\d\d-auto-[0-9a-f]{24})(?:-([0-9]+))?\.md')
 RECORD_TITLE = '# Automatic conversation record'
-RECORD_LIMIT = 200000  # Characters per session record part; a longer session starts a -2, -3, ... part.
+RECORD_LIMIT = 60000  # Characters per session record part (~15k tokens, one Read); a longer session starts a -2, -3, ... part.
 POINTERS = ('Latest checkpoint:', 'Latest handoff:', 'Latest automatic record:', 'Automatic records:', 'Active run:',
             'Latest run:')  # Navigation lines: they link notes but never cite them.
 # A turn marker carries its id hash I (empty without a client id) and response hash R; the older single-key

@@ -174,7 +174,8 @@ def load_context(info, event, own=()):
         'Pause/resume automatic memory: `automation off` / `automation on`.\n'
         'This session\'s record key: ' + session_key(info, event) + '. When you fold this session\'s own work '
         'into the curated notes, mark it compiled so a later session is not asked to redo it: `run compile --session '
-        'KEY`, cite each listed record in a note you updated, then `run compile --done TOKEN --updated NOTE` '
+        'KEY`, cite one of the listed records in a note you updated (that covers the whole session), then '
+        '`run compile --done TOKEN --updated NOTE` '
         '(it also covers the turn you run it in).\n'
     )
     # Compaction happens mid-task, so only a fresh, resumed, or cleared session is nudged to compile. The

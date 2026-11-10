@@ -235,5 +235,38 @@ class SlimRecordTests(LayoutCase):
         self.assertIn('## Subagent agent (a5d48fdf6631)', self.records()[0].read_text())
 
 
+class SessionCompileTests(LayoutCase):
+    def test_a_session_batch_covers_every_pending_part_of_that_session(self):
+        with patch.object(brain, 'RECORD_LIMIT', 2500):
+            for number in range(6):
+                self.turn(f'Backlog task {number}', f'Result {number} ' + 'z' * 900, session='backlog', prompt_id=f'b{number}')
+        self.turn('Other session.', 'Elsewhere.', session='other')
+        parts = [r for r in self.records() if 'Elsewhere' not in r.read_text()]
+        self.assertGreaterEqual(len(parts), 3)
+        key = re.search(r'-auto-([0-9a-f]{24})', parts[0].name)[1]
+        code, listing = self.cli('run', 'compile', '--session', key, '--limit', '1')
+        self.assertEqual(code, 0, listing)
+        self.assertEqual(sorted(r['path'] for r in listing['records']),
+                         sorted(p.relative_to(self.root).as_posix() for p in parts))
+        # Citing the session once (any of its parts) marks every listed part compiled.
+        self.note.write_text(self.note.read_text().replace('## Status\n\nNone recorded yet.',
+                             f'## Status\n\nBacklog curated. Evidence: {listing["records"][0]["link"]}.'))
+        code, done = self.cli('run', 'compile', '--done', listing['token'], '--updated', self.info['project'])
+        self.assertEqual(code, 0, done)
+        self.assertEqual(sorted(done['compiled']), sorted(r['path'] for r in listing['records']))
+        for part in parts:
+            self.assertEqual(brain.frontmatter(part.read_text())['status'], 'compiled')
+        pending, = [f for f in brain.doctor(self.root)['findings'] if f['kind'] == 'pending_compile']
+        self.assertEqual(pending['count'], 1)  # Only the other session is left.
+        self.assert_valid()
+
+    def test_a_session_batch_still_needs_one_citation_or_skip(self):
+        self.turn('Task', 'Result', session='backlog')
+        key = re.search(r'-auto-([0-9a-f]{24})', self.records()[0].name)[1]
+        listing = brain.compile_list(self.root, self.info['project'], session=key)
+        with self.assertRaisesRegex(ValueError, 'does not cite a record of this batch'):
+            brain.compile_done(self.root, self.info['project'], listing['token'], [self.info['project']])
+
+
 if __name__ == '__main__':
     unittest.main()

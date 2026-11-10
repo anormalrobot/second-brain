@@ -793,7 +793,8 @@ def turn_file(root, session):
 
 
 def compile_list(root, project, limit=COMPILE_LIMIT, session=None):
-    """List a compile batch; with session, only that session's own record parts (an agent compiling its own work)."""
+    """List a compile batch; with session, every pending part of that one session and nothing else (an agent compiling
+    its own work, or a long session's backlog): limit does not apply, and --done citing any part covers them all."""
     root = Path(root).resolve()
     if limit < 1:
         raise ValueError('Compile limit must be at least 1')
@@ -816,7 +817,7 @@ def compile_list(root, project, limit=COMPILE_LIMIT, session=None):
             return {'records': [], 'pending_total': 0}
         # Hashes are taken under the lock, so they match the turn counts that were just read.
         batch = []
-        for row in rows[:limit]:
+        for row in rows if session else rows[:limit]:  # A session batch is the whole session: every pending part.
             data = (root / row['path']).read_bytes()
             body = data.decode('utf-8')[body_start(data.decode('utf-8')):]
             batch.append(dict(batch_row(root, row), sha256=digest(data), body_length=len(body),
@@ -863,6 +864,8 @@ def compile_done(root, project, token, updated=(), skipped=(), when=None):
             if not found and links:
                 raise ValueError('Updated note does not cite a record of this batch: ' + relative)
             cited |= found
+        if batch.get('session') and cited:
+            cited |= set(records)  # One conversation: citing any of its parts covers the whole session.
         skipped = [run_note(n) if RUN_ID.fullmatch(n) else n for n in skipped]  # A run may be skipped by its id.
         for name in skipped:
             if name not in records and name not in boards:
@@ -1757,7 +1760,7 @@ def main(argv=None, prog=None):
     p = add('finish'); p.add_argument('source'); p.add_argument('--token', required=True); p.add_argument('--output', action='append'); p.add_argument('--error')
     p = add('checkpoint'); p.add_argument('--project', **bound, required=True); p.add_argument('--summary', required=True); p.add_argument('--next', required=True); p.add_argument('--evidence', action='append', required=True); p.add_argument('--id'); p.add_argument('--date'); p.add_argument('--complete', action='store_true')
     p = add('brief'); p.add_argument('--project', **bound); p.add_argument('--limit', type=int, default=6000)
-    p = add('compile'); p.add_argument('--project', **bound, required=True); p.add_argument('--limit', type=int, default=COMPILE_LIMIT); p.add_argument('--status', action='store_true'); p.add_argument('--done', metavar='TOKEN'); p.add_argument('--updated', action='append', default=[], metavar='NOTE'); p.add_argument('--skip', action='append', default=[], metavar='RECORD'); p.add_argument('--date'); p.add_argument('--session', metavar='KEY', help="List only this session's own records")
+    p = add('compile'); p.add_argument('--project', **bound, required=True); p.add_argument('--limit', type=int, default=COMPILE_LIMIT); p.add_argument('--status', action='store_true'); p.add_argument('--done', metavar='TOKEN'); p.add_argument('--updated', action='append', default=[], metavar='NOTE'); p.add_argument('--skip', action='append', default=[], metavar='RECORD'); p.add_argument('--date'); p.add_argument('--session', metavar='KEY', help="List every pending part of this one session (--limit does not apply; citing any part covers all)")
     p = add('search'); p.add_argument('query'); p.add_argument('--limit', type=int, default=8)
     p = add('doctor'); p.add_argument('--as-of'); p.add_argument('--stale-days', type=int, default=90)
     p = add('consolidate'); p.add_argument('--source', required=True); p.add_argument('--target', required=True); p.add_argument('--text-file', type=Path, required=True); p.add_argument('--evidence', action='append', required=True); p.add_argument('--expected-sha', required=True); p.add_argument('--date')

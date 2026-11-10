@@ -223,21 +223,30 @@ Work normally in a project where you have run `init`. The plugin:
 - Saves bounded excerpts of your request and the final response under
   `memory/sessions/`: one record per agent session, with one section per turn.
   Each project keeps one records list, `memory/sessions/records/PROJECT.md`,
-  linked once from the project note and vault index, so `index.md` and `log.md`
-  do not grow with every turn. Client notices that arrive as prompts (background
-  task notifications, subagent hand-backs) are saved as system notifications and
-  add no note excerpts.
+  linked from the project note and its line in `index.md`, so `index.md` and
+  `log.md` do not grow with every turn. Client notices that arrive as prompts
+  (background task notifications, subagent hand-backs) are saved as one-line
+  system notifications (task id, status, and summary, or the sender and first
+  line) and add no note excerpts.
+- Keeps `index.md` as a generated catalog of the vault: start-here files,
+  projects, wiki topics, wiki sources, and raw sources, one line per page with a
+  one-line summary. Memory commands rebuild it; `run index` does so after manual
+  edits, and lines you write below its end marker are kept. `log.md` is the
+  chronological history.
 - Compiles records into curated knowledge. When a session starts and other
   sessions left uncompiled records (or a run board was closed), the agent is asked to fold their durable
   facts into the project note (Goal, Decisions, Status, Open questions, Next
-  steps), your profile, `memory/decisions/`, or `wiki/topics/`, citing the
+  steps), your profile, or `wiki/topics/`, citing the
   records, before or right after your first task. The current agent does this; no
   background model runs. You can also ask for it with `/second-brain:compile`
   in Claude Code or the `compile` skill in Codex. `run compile --status` and
   `run doctor` show what is pending. An agent that keeps the notes current
   during its own session marks that session compiled with `run compile
   --session KEY` (the session-start context names the key), so the next
-  session is not asked to redo it.
+  session is not asked to redo it; the same command clears a long session's
+  whole backlog at once.
+- Keeps checkpoints and handoffs (`run checkpoint`) as fixed log entries; the
+  project note's latest-checkpoint or latest-handoff line names the current one.
 - Names and dates notes using your computer's local date.
 
 Automatic records preserve what was said; they do not prove that a task succeeded.
@@ -255,6 +264,12 @@ helper. Status includes timestamps for hooks that actually ran. Previously
 initialized projects also gain automatic memory after upgrading and activating
 the hooks; pausing preserves their existing notes. Records saved by earlier
 versions (one file per turn) stay in place and are compiled like newer ones.
+After upgrading to 0.6.3, ask the agent to run `second-brain run migrate`: it
+reports the one-time vault changes (generated `index.md`, older checkpoints marked
+`recorded`, an empty `memory/decisions/` removed, an unedited older `AGENTS.md`
+refreshed), and `run migrate --apply` makes them after saving a snapshot under
+`.brain/snapshots/`. Your own edits to `AGENTS.md` and lines that only the old
+index linked are kept.
 
 ### Growing the wiki
 
@@ -266,8 +281,12 @@ changed since it was read). `run search` ranks notes by where the words appear
 (title and path first, then headings, then text), puts notes matching every word
 first, and prefers curated notes over automatic records; the same ranking picks
 the excerpts added to your prompts. `run doctor` also lists notes to review: an
-empty project note despite records, wiki or decision notes without evidence
-links, and notes only `index.md` links to.
+empty project note despite records, wiki notes without evidence links, notes
+only `index.md` links to, and raw files not yet registered for ingestion.
+
+To ingest a source, put it under `raw/` and ask the agent to process it: `run
+scan` registers it, `run begin` names its summary page in `wiki/sources/`, and
+`run finish` checks that page links the source and lists it in `index.md`.
 
 ## Agent orchestration
 
@@ -282,7 +301,7 @@ second-brain also shares memory between agents working together in one project.
   `SECOND_BRAIN_RUN=RUN` to attach them to a run board.
 - **Run boards** coordinate the work: tasks with claims, leases, dependencies,
   progress notes, and results. Each board is a generated note in `memory/runs/`,
-  linked from the project note and `index.md`.
+  linked from the project note (and, once closed, from `log.md`).
 
 A typical orchestration, using the bundled helper (`second-brain` below):
 
@@ -353,6 +372,7 @@ second-brain run compile --status  # Show automatic records waiting to be compil
 second-brain run board show        # Show the project's active run board
 second-brain run search "terms"    # Find notes, best matches first
 second-brain run doctor            # Check the vault and list notes to review
+second-brain run migrate           # After an upgrade: report vault changes (--apply)
 ```
 
 To start a CLI session with access to the vault, use `second-brain launch codex`

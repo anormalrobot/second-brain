@@ -1,6 +1,6 @@
 ---
 name: compile
-description: Compile this project's pending automatic conversation records and closed run boards into curated second-brain notes (project note sections, profile, decisions, wiki topics), citing them as evidence, then mark them compiled. Use when a session-start notice reports pending records or run boards, or when the user asks to compile, digest, or consolidate automatic memory.
+description: Compile this project's pending automatic conversation records and closed run boards into curated second-brain notes (project note sections including decisions, profile, wiki topics), citing them as evidence, then mark them compiled. Use when a session-start notice reports pending records or run boards, or when the user asks to compile, digest, or consolidate automatic memory.
 ---
 
 # Compile automatic records
@@ -34,10 +34,9 @@ user's first task, or right after it if that task is urgent.
    tasks, activity, and results are agent claims with evidence links, useful
    for the project's status, decisions, and next steps.
 3. Fold durable facts into curated notes:
-   - The project note sections: `## Goal`, `## Decisions`, `## Status`,
-     `## Open questions`, `## Next steps`.
+   - The project note sections: `## Goal`, `## Decisions` (decisions the user
+     accepted), `## Status`, `## Open questions`, `## Next steps`.
    - `memory/profile.md`, only for preferences the user stated.
-   - `memory/decisions/`, for decisions the user accepted.
    - `wiki/topics/`, for reusable knowledge that applies across projects: edit
      the existing topic, or file a new page with `second-brain run file-answer
      --title "..." --text-file FILE --source RECORD_PATH [...]` (or append to one
@@ -46,8 +45,9 @@ user's first task, or right after it if that task is urgent.
 4. Cite each record and run board you used with its wikilink (the `link` field;
    it already includes any link prefix), for example
    `Evidence: [[memory/sessions/...]]` or `[[memory/runs/...]]`.
-   Link each new note from `index.md` or the project note, and keep the
+   Link each new note from the project note or related pages, and keep the
    `created`, `updated`, and `status` frontmatter on every note you write.
+   `index.md` is generated: `--done` lists new wiki pages in it.
 5. Run `second-brain run compile --done TOKEN --updated NOTE [--updated NOTE ...]
    [--skip RECORD ...]`. Each updated note must cite at least one batch record
    or run (an empty session batch from step 7 has nothing to cite, so this
@@ -60,11 +60,12 @@ user's first task, or right after it if that task is urgent.
    `second-brain run compile --status` shows what is pending without starting
    a batch; its `queued` counts hook writes still waiting for the vault lock,
    which the next listing applies first.
-7. To compile only the current session's own record, after curating its work
-   yourself, list with `second-brain run compile --session KEY`, using the
-   record key the session-start context names. It lists only that session's
-   parts (an empty listing still returns a token) and no run boards. Its
-   `--done` also marks the turn running now as compiled when that turn's Stop
+7. To compile one whole session, such as the current session after curating
+   its work yourself, list with `second-brain run compile --session KEY`, using
+   the record key the session-start context names. It lists every pending part
+   of that session (`--limit` does not apply; an empty listing still returns a
+   token) and no run boards, and citing any one listed part in an updated note
+   covers all of them. For the current session, its `--done` also marks the turn running now as compiled when that turn's Stop
    is recorded. Everything else recorded after `--done` stays pending: a
    subagent result that arrives before that Stop, and every later turn. No turn
    is covered when the session still had queued hook writes at `--done`, when

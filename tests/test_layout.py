@@ -182,6 +182,26 @@ class SourceIngestTests(LayoutCase):
         self.assertTrue(brain.coverage(self.root)['complete'])
         self.assert_valid()
 
+    def test_default_source_pages_never_collide(self):
+        for name in ('raw/2025/report.pdf', 'raw/2026/report.pdf', 'raw/отчёт.pdf', 'raw/日本.pdf'):
+            self.write(name, 'source ' + name)
+        brain.scan(self.root)
+        pages = {}
+        for name in ('raw/2025/report.pdf', 'raw/2026/report.pdf', 'raw/отчёт.pdf', 'raw/日本.pdf'):
+            pages[name] = brain.begin(self.root, name)['output']
+        self.assertEqual(len(set(pages.values())), 4, pages)
+        self.assertEqual(pages['raw/2025/report.pdf'], 'wiki/sources/report.md')
+        for page in pages.values():
+            self.assertRegex(page, r'^wiki/sources/[a-z0-9-]+\.md$')
+        # The page is kept in the ledger, so finish (and a later begin) uses the same one.
+        name = 'raw/2026/report.pdf'
+        entry = brain.resolve_entry(brain.load_ledger(self.root), name)
+        self.assertEqual(entry['output'], pages[name])
+        self.write(pages[name], META + f'# Report 2026\n\nSummary of [[{name}|the report]].\n')
+        self.write('wiki/sources/report.md', META + '# Report 2025\n\nOther page.\n')
+        self.assertEqual(brain.finish(self.root, name, entry['token'])['state'], 'processed')
+        self.assertEqual(list(brain.load_ledger(self.root)['sources'][entry['id']]['outputs']), [pages[name]])
+
     def test_doctor_names_the_next_step_for_unregistered_raw_files(self):
         (self.root / 'raw/new.pdf').write_bytes(b'%PDF')
         found, = [f for f in brain.doctor(self.root)['findings'] if f['kind'] == 'unregistered_source']

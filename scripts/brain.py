@@ -372,16 +372,27 @@ def begin(root, key):
         if entry['state'] == 'processing':
             raise ValueError('Processing lease exists; fail it explicitly before retrying')
         token = uuid.uuid4().hex
-        entry.update(state='processing', token=token)
+        entry.update(state='processing', token=token, output=source_page(root, ledger, entry))
         entry['attempts'].append({'token': token, 'started': timestamp(), 'outcome': 'processing'})
         save_json(root / LEDGER, ledger)
-        return {'id': entry['id'], 'token': token, 'state': 'processing', 'output': source_page(entry)}
+        return {'id': entry['id'], 'token': token, 'state': 'processing', 'output': entry['output']}
 
 
-def source_page(entry):
-    """The default source summary page of a ledger entry: wiki/sources/ plus a slug of its first raw file name."""
+def source_page(root, ledger, entry):
+    """The default source summary page of a ledger entry, allocated once and kept in the entry: wiki/sources/ plus a
+    slug of its first raw file name, or that slug with a short source-id suffix when another source's page, or any
+    existing file, already has the name (and for a name with no a-z or 0-9 characters)."""
+    if entry.get('output'):
+        return entry['output']
     stem = Path(entry['paths'][0]).stem if entry['paths'] else ''
-    return 'wiki/sources/' + (re.sub(r'[^a-z0-9]+', '-', stem.casefold()).strip('-')[:64].strip('-') or 'source') + '.md'
+    slug = re.sub(r'[^a-z0-9]+', '-', stem.casefold()).strip('-')[:48].strip('-')
+    taken = {name for other in ledger['sources'].values() if other is not entry
+             for name in [other.get('output'), *other.get('outputs', {})]}
+    for name in ([slug] if slug else []) + [(slug or 'source') + '-' + entry['id'][:10]]:
+        relative = f'wiki/sources/{name}.md'
+        if relative not in taken and not os.path.lexists(root / relative):
+            return relative
+    return relative  # The id suffix is unique per source; an existing file there is this source's own page.
 
 
 def finish(root, key, token, outputs=None, error=None):
@@ -395,7 +406,7 @@ def finish(root, key, token, outputs=None, error=None):
             entry.update(state='failed', error=error)
         else:
             verify_raw(root, entry)
-            outputs = outputs or [source_page(entry)]
+            outputs = outputs or [source_page(root, ledger, entry)]
             if not scoped(root, outputs[0]).is_file():
                 raise ValueError(f'Write the source summary page {outputs[0]} (linking the raw source) or pass --output NOTE')
             hashes = {}

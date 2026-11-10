@@ -202,6 +202,32 @@ class SourceIngestTests(LayoutCase):
         self.assertEqual(brain.finish(self.root, name, entry['token'])['state'], 'processed')
         self.assertEqual(list(brain.load_ledger(self.root)['sources'][entry['id']]['outputs']), [pages[name]])
 
+    def test_an_occupied_page_is_never_handed_out(self):
+        self.write('raw/report.pdf', 'source')
+        brain.scan(self.root)
+        key = brain.digest(b'source')
+        for name in ('report', 'report-' + key[:10], 'report-' + key):
+            self.write(f'wiki/sources/{name}.md', META + '# Unrelated\n\nNot this source.\n')
+        page = brain.begin(self.root, 'raw/report.pdf')['output']
+        self.assertEqual(page, f'wiki/sources/report-{key[:10]}-2.md')
+        self.assertFalse((self.root / page).exists())
+
+    def test_an_invalid_stored_page_is_replaced_before_the_lease_is_saved(self):
+        outside = self.base / 'outside.md'
+        (self.root / 'wiki/sources/link.md').symlink_to(outside)
+        self.write('raw/notes.txt', 'notes')
+        brain.scan(self.root)
+        key = brain.digest(b'notes')
+        for bad in ('../../outside.md', 'wiki/topics/notes.md', 'wiki/sources/notes.txt', 'wiki/sources/link.md',
+                    'wiki/sources/.hidden.md', 'wiki/sources/a/../../../x.md', 7):
+            ledger = brain.load_ledger(self.root)
+            ledger['sources'][key].update(output=bad, state='pending')
+            brain.save_json(self.root / brain.LEDGER, ledger)
+            lease = brain.begin(self.root, 'raw/notes.txt')
+            self.assertEqual(lease['output'], 'wiki/sources/notes.md', bad)
+            self.assertEqual(brain.load_ledger(self.root)['sources'][key]['output'], 'wiki/sources/notes.md')
+        self.assertFalse(outside.exists())
+
     def test_doctor_names_the_next_step_for_unregistered_raw_files(self):
         (self.root / 'raw/new.pdf').write_bytes(b'%PDF')
         found, = [f for f in brain.doctor(self.root)['findings'] if f['kind'] == 'unregistered_source']

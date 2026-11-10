@@ -378,21 +378,42 @@ def begin(root, key):
         return {'id': entry['id'], 'token': token, 'state': 'processing', 'output': entry['output']}
 
 
+SOURCE_PAGE_TRIES = 100  # Counter suffixes tried after the id-suffixed names before begin refuses.
+
+
+def source_page_ok(root, relative):
+    """True for a Markdown page directly in wiki/sources/ that scoped accepts (no traversal, hidden part, or symlink
+    leaving the folder) and that is not itself a symlink."""
+    if not isinstance(relative, str) or not re.fullmatch(r'wiki/sources/[^/\\]+\.md', relative):
+        return False
+    try:
+        path = scoped(root, relative, area='wiki/sources')
+    except ValueError:
+        return False
+    return path == Path(root).resolve() / relative and not path.is_symlink()
+
+
 def source_page(root, ledger, entry):
-    """The default source summary page of a ledger entry, allocated once and kept in the entry: wiki/sources/ plus a
-    slug of its first raw file name, or that slug with a short source-id suffix when another source's page, or any
-    existing file, already has the name (and for a name with no a-z or 0-9 characters)."""
-    if entry.get('output'):
+    """The default source summary page of a ledger entry, allocated once and kept in the entry. A stored page is
+    reused only when it is still a valid wiki/sources/ page (an invalid stored value, e.g. from an edited ledger, is
+    replaced). A new page is the slug of the first raw file name; when another source's page or any existing file
+    has that name (or the slug is empty), the slug plus a 10-character source-id suffix, then the full id, then a
+    counter. An occupied path is never handed out; begin refuses when every candidate is taken."""
+    if source_page_ok(root, entry.get('output')):
         return entry['output']
     stem = Path(entry['paths'][0]).stem if entry['paths'] else ''
     slug = re.sub(r'[^a-z0-9]+', '-', stem.casefold()).strip('-')[:48].strip('-')
     taken = {name for other in ledger['sources'].values() if other is not entry
              for name in [other.get('output'), *other.get('outputs', {})]}
-    for name in ([slug] if slug else []) + [(slug or 'source') + '-' + entry['id'][:10]]:
+    base = (slug or 'source') + '-'
+    names = ([slug] if slug else []) + [base + entry['id'][:10], base + entry['id']]
+    names += [f'{base}{entry["id"][:10]}-{number}' for number in range(2, SOURCE_PAGE_TRIES + 2)]
+    for name in names:
         relative = f'wiki/sources/{name}.md'
-        if relative not in taken and not os.path.lexists(root / relative):
+        if relative not in taken and not os.path.lexists(Path(root) / relative) and source_page_ok(root, relative):
             return relative
-    return relative  # The id suffix is unique per source; an existing file there is this source's own page.
+    raise ValueError(f'No free default source page for {entry["paths"][0] if entry["paths"] else entry["id"]} under '
+                     'wiki/sources/; rename or remove the conflicting pages, then run begin again')
 
 
 def finish(root, key, token, outputs=None, error=None):

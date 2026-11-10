@@ -56,16 +56,16 @@ COMPILE_STEPS = [
     '(from the top when from_turn is 1), including "## Subagent" result sections; from_turn is past through_turn '
     'when only subagent results are new. A legacy record is one turn. Read each closed run board in runs too: its '
     'results are agent claims with evidence links.',
-    'Fold durable facts into curated notes: the project note sections (Goal, Decisions, Status, Open questions, '
-    'Next steps); memory/profile.md only for preferences the user stated; memory/decisions/ for accepted '
-    'decisions; wiki/topics/ for reusable cross-project knowledge.',
+    'Fold durable facts into curated notes: the project note sections (Goal, Decisions for accepted decisions, '
+    'Status, Open questions, Next steps); memory/profile.md only for preferences the user stated; wiki/topics/ for '
+    'reusable cross-project knowledge.',
     'Records are attributed excerpts: separate user-stated facts, accepted decisions, proposals, and unverified '
     'assistant claims. Never promote an assistant claim to a fact.',
     'Cite every record you use with its wikilink (link), keep notes in English, update existing sections instead '
     'of appending duplicates, and mark outdated statements as superseded instead of deleting them.',
-    'Link new notes from index.md or the project note, then run compile --done TOKEN --updated NOTE '
-    '[--updated NOTE ...] [--skip RECORD ...]; every record and run must be cited or skipped (a run by its path); '
-    'skip ones with no durable content. Do not ask the user.',
+    'Link new notes from the project note or related pages (index.md is generated and lists wiki pages), then run '
+    'compile --done TOKEN --updated NOTE [--updated NOTE ...] [--skip RECORD ...]; every record and run must be cited '
+    'or skipped (a run by its path); skip ones with no durable content. Do not ask the user.',
 ]
 STOP_WORDS = set('the and for with this that from have what how can you our are was '
                  'will please project about your into use using bir ve bu ile için '
@@ -830,8 +830,7 @@ def compile_list(root, project, limit=COMPILE_LIMIT, session=None):
     return {'token': token, 'records': [{k: v for k, v in entry.items() if not k.startswith(('sha256', 'body_'))}
                                         for entry in batch],
             'pending_total': pending, **({'runs': boards} if boards else {}), **({'session': session} if session else {}),
-            'targets': {'project': project, 'profile': 'memory/profile.md', 'decisions': 'memory/decisions/',
-                        'topics': 'wiki/topics/'},
+            'targets': {'project': project, 'profile': 'memory/profile.md', 'topics': 'wiki/topics/'},
             'instructions': COMPILE_STEPS}
 
 
@@ -1518,7 +1517,7 @@ def content_findings(root, texts, edges):
             if target != source and target.is_relative_to(root) and source.is_relative_to(root):
                 inbound.setdefault(target.relative_to(root).as_posix(), set()).add(source.relative_to(root).as_posix())
     for name in sorted(texts):
-        if name.startswith('wiki/') or name.startswith('memory/decisions/'):
+        if name.startswith('wiki/'):
             # Evidence: raw sources, records, run boards, or other notes; index/log and project navigation are not.
             found, outside = linked_files(root, texts[name], POINTERS + ('Project:',), vault)
             evidence = [t for t in found - {name, 'index.md', 'log.md'}

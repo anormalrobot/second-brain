@@ -118,7 +118,7 @@ conversation records in initialized projects. No sync service is installed.
     }
     for name, value in files.items():
         brain.atomic_write(root / name, value)
-    for name in ('raw', 'wiki/sources', 'wiki/topics', 'memory/projects', 'memory/sessions', 'memory/decisions', 'inbox'):
+    for name in ('raw', 'wiki/sources', 'wiki/topics', 'memory/projects', 'memory/sessions', 'inbox'):
         (root / name).mkdir(parents=True, exist_ok=True)
     brain.save_json(root / brain.LEDGER, {'schema_version': 1, 'sources': {}})
     brain.rebuild_index(root)

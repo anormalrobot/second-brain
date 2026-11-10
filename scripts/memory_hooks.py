@@ -169,8 +169,8 @@ def load_context(info, event, own=()):
                 + (f' and {len(boards)} closed run board(s)' if boards else '') + ' are not yet compiled'
                 + (f' (oldest {rows[0]["created"] or "undated"})' if rows else '') + '. Before the user\'s first task '
                 '(or right after it if the task is urgent), `run compile`, fold durable facts into the curated notes '
-                '(project note sections, profile only for preferences the user stated, memory/decisions/ for accepted '
-                'decisions, wiki/topics/ for reusable cross-project knowledge), cite the records as evidence, '
+                '(project note sections, with accepted decisions under Decisions; profile only for preferences the '
+                'user stated; wiki/topics/ for reusable cross-project knowledge), cite the records as evidence, '
                 'then `run compile --done`. Do not ask the user; skip records with no durable content. '
                 'Use the bundled command: `run compile`; then `run compile --done TOKEN --updated NOTE '
                 '[--updated NOTE ...] [--skip RECORD ...]`.\n')

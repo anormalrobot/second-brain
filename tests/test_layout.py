@@ -172,5 +172,21 @@ class SourceIngestTests(LayoutCase):
         self.assertNotIn('source_url', entry)
 
 
+class NoDecisionsFolderTests(LayoutCase):
+    def test_decisions_live_in_the_project_note_only(self):
+        self.assertFalse((self.root / 'memory/decisions').exists())
+        self.turn('We chose SQLite.', 'Noted.', session='other')
+        listing = brain.compile_list(self.root, self.info['project'])
+        self.assertNotIn('decisions', listing['targets'])
+        start = self.handle('SessionStart', source='startup')['hookSpecificOutput']['additionalContext']
+        self.assertIn('Compile pending', start)
+        for text in (' '.join(listing['instructions']), start):
+            self.assertNotIn('memory/decisions', text)
+        self.write('memory/decisions/old.md', META + '# Old\n\nNo evidence here.\n')
+        brain.rebuild_index(self.root)
+        self.assertNotIn('memory/decisions/old.md', [p for f in brain.doctor(self.root)['findings']
+                                                      if f['kind'] == 'unsupported_note' for p in f['paths']])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -993,7 +993,7 @@ def note_title(relative, text):
     """A note's first # heading outside code, made safe as a wikilink alias; else its file name."""
     for offset, raw, plain in plain_lines(text):
         if offset >= body_start(text) and raw.startswith('# ') and plain.startswith('# '):
-            title = ' '.join(UNLINKABLE.sub(' ', raw[2:]).split())
+            title = ' '.join(UNLINKABLE.sub(' ', raw[2:].replace('<!--', ' ').replace('-->', ' ')).split())
             if title:
                 return title
             break
@@ -1020,7 +1020,9 @@ def note_summary(text):
     line = re.sub(r'\[\[([^\]|]*)\|([^\]]*)\]\]', r'\2', line)
     line = re.sub(r'\[\[([^\]]*)\]\]', r'\1', line)
     line = re.sub(r'!?\[([^\]]*)\]\([^)]*\)', r'\1', line)
-    line = ' '.join(line.replace('**', '').replace('[[', '').replace(']]', '').split())
+    for token in ('**', '[[', ']]', '<!--', '-->'):  # No link syntax or HTML comment (index markers) in a summary.
+        line = line.replace(token, ' ' if token in ('<!--', '-->') else '')
+    line = ' '.join(line.split())
     if len(line) > SUMMARY_LIMIT:
         line = line[:SUMMARY_LIMIT - 1].rsplit(' ', 1)[0].rstrip(' ,;:') + '…'
     return line.replace('`', '') if line.count('`') % 2 else line
@@ -1110,6 +1112,21 @@ def rescued(root, old, catalog, overlay):
     return '\n'.join(kept).strip('\n').splitlines()
 
 
+def index_markers(text):
+    """(start of the catalog's start-marker line, end of its end-marker line) for the first pair of standalone marker
+    lines outside code, or None. Marker text quoted inline or in a code block never counts."""
+    start = None
+    for offset, raw, plain in plain_lines(text):
+        line = raw.rstrip('\r\n')
+        if line != plain.rstrip('\r\n'):
+            continue
+        if start is None and line == INDEX_START:
+            start = offset
+        elif start is not None and line == INDEX_END:
+            return start, offset + len(raw)
+    return None
+
+
 def index_text(root, overlay=None):
     """index.md as a generated content catalog (deterministic for the same files) followed by the hand-written lines
     kept below the end marker. An index.md without that marker predates the catalog: its lines that the catalog would
@@ -1121,11 +1138,10 @@ def index_text(root, overlay=None):
     if old is None:
         old = path.read_text(encoding='utf-8') if path.is_file() else ''
     catalog = index_catalog(root, overlay)
-    if INDEX_END in old:
-        head, tail = old.split(INDEX_END, 1)
-        extra = head.split(INDEX_START, 1)[0] if INDEX_START in head else ''
-        extra = '\n'.join(l for l in extra.splitlines() if l.strip() and not l.startswith('# '))
-        kept = (extra + '\n\n' if extra else '') + tail.strip('\n')
+    markers = index_markers(old)
+    if markers:
+        extra = '\n'.join(l for l in old[:markers[0]].splitlines() if l.strip() and not l.startswith('# '))
+        kept = (extra + '\n\n' if extra else '') + old[markers[1]:].strip('\n')
     else:
         kept = '\n'.join(rescued(root, old, catalog, overlay))
         kept = '## Hand-written\n\nKept from the index.md written before the generated catalog.\n\n' + kept if kept else ''
@@ -1760,7 +1776,7 @@ def migrate(root, apply=False, when=None):
         overlay = {'AGENTS.md': AGENTS_TEMPLATE} if agents_state == 'refresh' else {}
         old = (root / 'index.md').read_text(encoding='utf-8') if (root / 'index.md').is_file() else ''
         index = index_text(root, overlay)
-        kept = len(rescued(root, old, index_catalog(root, overlay), overlay)) if INDEX_END not in old else 0
+        kept = len(rescued(root, old, index_catalog(root, overlay), overlay)) if not index_markers(old) else 0
         changes = len(checkpoints) + (agents_state == 'refresh') + (folder == 'remove') + (index != old)
         report = {'applied': False, 'changes': changes, 'snapshot': None,
                   'index': {'changed': index != old, 'hand_written_lines': kept}, 'checkpoints': checkpoints,

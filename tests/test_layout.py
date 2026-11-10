@@ -142,6 +142,20 @@ class IndexCatalogTests(LayoutCase):
         self.assertNotIn('[[AGENTS]]', kept)
         self.assert_valid()
 
+    def test_marker_text_quoted_in_a_note_keeps_rebuilds_identical(self):
+        self.write('wiki/topics/markers.md', META + f'# Markers\n\nThe index ends at {brain.INDEX_END} and starts at '
+                   f'{brain.INDEX_START}.\n\n```text\n{brain.INDEX_END}\n```\n')
+        with (self.root / 'index.md').open('a') as index:
+            index.write(f'\nQuoted:\n\n```text\n{brain.INDEX_START}\n{brain.INDEX_END}\n```\n')
+        brain.rebuild_index(self.root)
+        first = self.index()
+        for _ in range(3):
+            brain.rebuild_index(self.root)
+            self.assertEqual(self.index(), first)
+        self.assertEqual(first.count(brain.INDEX_END), 2)  # The real marker and the quoted one below it.
+        self.assertIn('Quoted:', first.split(brain.INDEX_END, 1)[1])
+        self.assert_valid()
+
     def test_index_command_rebuilds_the_catalog(self):
         self.write('wiki/topics/manual.md', META + '# Manual page\n\nWritten by hand.\n')
         self.assertIn('wiki/topics/manual.md: unreachable from index.md', check(self.root)[0])

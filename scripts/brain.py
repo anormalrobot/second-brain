@@ -129,11 +129,12 @@ def day():
 
 
 def atomic_write(path, text):
+    """Write text (as UTF-8) or bytes to path atomically."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix='.' + path.name, dir=path.parent)
     try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        with (os.fdopen(fd, 'wb') if isinstance(text, bytes) else os.fdopen(fd, 'w', encoding='utf-8')) as f:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
@@ -141,6 +142,25 @@ def atomic_write(path, text):
     finally:
         if os.path.exists(name):
             os.unlink(name)
+
+
+def sync_dir(path):
+    """fsync a directory so a file just renamed into it survives power loss. Only the platform limits are skipped
+    (Windows cannot open a directory; some file systems refuse to fsync one); a real I/O error is raised, so the
+    caller does not go on to replace what the file preserves."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except (PermissionError, IsADirectoryError):
+        if os.name == 'nt':
+            return
+        raise
+    try:
+        os.fsync(fd)
+    except OSError as exc:
+        if exc.errno not in (errno.EINVAL, errno.ENOTSUP, getattr(errno, 'EOPNOTSUPP', errno.ENOTSUP)):
+            raise
+    finally:
+        os.close(fd)
 
 
 def load_json(path, default):
@@ -1004,6 +1024,7 @@ def compile_done(root, project, token, updated=(), skipped=(), when=None):
 
 INDEX_START = '<!-- second-brain index: generated from the notes; edit only below the end marker -->'
 INDEX_END = '<!-- second-brain index end: lines below this marker are hand-written and kept -->'
+INDEX_BACKUP = 'index-invalid-utf8-*.md'  # Under .brain/: original bytes of an index.md that was not valid UTF-8.
 INDEX_SECTIONS = ('Start here', 'Projects', 'Wiki topics', 'Wiki sources', 'Raw sources', 'Other notes')
 START_HERE = ('AGENTS.md', 'memory/profile.md', 'log.md')
 FIXED_SUMMARIES = {'log.md': 'Chronological, append-only history of changes to this vault.',
@@ -1210,6 +1231,19 @@ def index_markers(text):
     return None
 
 
+def read_index(path):
+    """(text, original bytes or None) of an existing index.md. Bytes that are not valid UTF-8 are decoded with
+    replacement characters, so the hand-written lines survive as text, and returned so the writer can back them up;
+    the Stop hook rebuilds the index on every turn, so a bad file must never make it raise."""
+    if not path.is_file():
+        return '', None
+    data = path.read_bytes()
+    try:
+        return data.decode('utf-8'), None
+    except UnicodeDecodeError:
+        return data.decode('utf-8', errors='replace'), data
+
+
 def index_text(root, overlay=None):
     """index.md as a generated content catalog (deterministic for the same files) followed by the hand-written lines
     kept below the end marker. An index.md without that marker predates the catalog: its lines that the catalog would
@@ -1219,7 +1253,7 @@ def index_text(root, overlay=None):
     path = root / 'index.md'
     old = overlay.pop('index.md', None)
     if old is None:
-        old = path.read_text(encoding='utf-8') if path.is_file() else ''
+        old = read_index(path)[0]
     catalog = index_catalog(root, overlay)
     markers = index_markers(old)
     if markers:
@@ -1232,12 +1266,26 @@ def index_text(root, overlay=None):
 
 
 def rebuild_index(root, overlay=None):
-    """Write the generated index.md when it changed; the caller holds the writer lock. True when it was written."""
+    """Write the generated index.md when it changed; the caller holds the writer lock. True when it was written. An
+    index.md that is not valid UTF-8 is first copied byte for byte to .brain/index-invalid-utf8-*.md (doctor reports
+    it), then rewritten from its replacement-decoded text."""
     root = Path(root).resolve()
-    text = index_text(root, overlay)
+    return write_index(root, index_text(root, overlay))
+
+
+def write_index(root, text):
+    """Write text as index.md when it differs, backing up an invalid-UTF-8 original first (see rebuild_index). The
+    backup's directory is synced before index.md is replaced, so a crash cannot keep the new index and lose the
+    original bytes. True when it was written."""
     path = root / 'index.md'
-    if path.is_file() and path.read_text(encoding='utf-8') == text:
+    old, invalid = read_index(path)
+    if path.is_file() and invalid is None and old == text:
         return False
+    if invalid is not None:
+        stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')
+        backup = internal(root, f'.brain/{INDEX_BACKUP}'.replace('*', f'{stamp}-{uuid.uuid4().hex[:6]}'))
+        atomic_write(backup, invalid)
+        sync_dir(backup.parent)
     atomic_write(path, text)
     return True
 
@@ -1360,9 +1408,10 @@ def file_answer(root, title, text, sources=(), slug=None, update=False, expected
             issues = [i for i in after if i.startswith(relative + ':') or i not in before]
             if issues:
                 raise ValueError('Structural validation failed: ' + '; '.join(issues[:5]))
+        if read_index(root / 'index.md')[1] is not None:  # Recover (back up and rewrite) before touching the page.
+            rebuild_index(root)
         atomic_write(page, out)
-        if index != (root / 'index.md').read_text(encoding='utf-8'):
-            atomic_write(root / 'index.md', index)
+        write_index(root, index)
         atomic_write(root / 'log.md', log)
         sha = digest(page.read_bytes())  # Read under the lock: exactly the page this call wrote.
     return {'path': relative, 'sha256': sha}
@@ -1720,8 +1769,9 @@ def doctor(root, as_of=None, stale_days=90):
     try:
         queued = [p.name for p in internal_files(root, SPOOL) if SPOOL_NAME.fullmatch(p.name)]
         failed = [p.name for p in internal_files(root, SPOOL + '/failed')]
+        backups = ['.brain/' + p.name for p in internal_files(root, '.brain', INDEX_BACKUP)]
     except ValueError as exc:
-        queued, failed = [], []
+        queued, failed, backups = [], [], []
         findings.append({'kind': 'structural', 'detail': str(exc)})
     if queued:
         findings.append({'kind': 'spool_backlog', 'count': len(queued), 'oldest': queued[0],
@@ -1729,6 +1779,11 @@ def doctor(root, as_of=None, stale_days=90):
                                    'SubagentStop hook that gets the lock applies them, as do run compile (listing and '
                                    '--done) and board open, add, claim, post, release, and close; compile --status and '
                                    'board show report them as queued.'})
+    if backups:
+        findings.append({'kind': 'index_backup', 'paths': backups,
+                         'detail': 'index.md was not valid UTF-8, so it was rebuilt with replacement characters (U+FFFD) '
+                                   'and its original bytes were saved here. Restore any hand-written text below the '
+                                   'index end marker, then delete the backup.'})
     if failed:
         findings.append({'kind': 'spool_failed', 'count': len(failed), 'paths': [SPOOL + '/failed/' + n for n in failed],
                          'detail': 'Hook writes that could not be applied for 7 days (for example, the project was unbound); '
@@ -1850,12 +1905,13 @@ def migration_plan(root):
               'kept (not empty)' if any(decisions.iterdir()) else 'remove')
     checkpoints = old_checkpoints(root)
     overlay = {'AGENTS.md': AGENTS_TEMPLATE} if agents_state == 'refresh' else {}
-    old = (root / 'index.md').read_text(encoding='utf-8') if (root / 'index.md').is_file() else ''
+    old, invalid = read_index(root / 'index.md')
     index = index_text(root, overlay)
+    changed = index != old or invalid is not None  # Invalid bytes are recovered (backed up) even if the text matches.
     kept = len(rescued(root, old, index_catalog(root, overlay), overlay)) if not index_markers(old) else 0
-    changes = len(checkpoints) + (agents_state == 'refresh') + (folder == 'remove') + (index != old)
+    changes = len(checkpoints) + (agents_state == 'refresh') + (folder == 'remove') + changed
     return {'applied': False, 'changes': changes, 'snapshot': None,
-            'index': {'changed': index != old, 'hand_written_lines': kept}, 'checkpoints': checkpoints,
+            'index': {'changed': changed, 'hand_written_lines': kept}, 'checkpoints': checkpoints,
             'decisions_folder': folder, 'agents': agents_state}
 
 

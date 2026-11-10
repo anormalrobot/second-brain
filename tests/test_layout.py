@@ -18,6 +18,7 @@ import memory_hooks as hooks
 import second_brain as setup
 from check_vault import check, wiki_target
 
+INDEX_TAIL = b'\n- caf\xe9 notes kept by hand\n'
 META = '---\ncreated: 2026-01-01\nupdated: 2026-01-01\nstatus: active\n---\n'
 
 
@@ -261,6 +262,137 @@ class IndexCatalogTests(LayoutCase):
         self.assertIn('- [[wiki/topics/locked|Locked]]', kept)  # Its reachability cannot be established.
         self.assertNotIn('wiki/topics/open', kept)
         self.assertIn('wiki/topics/locked.md: unreadable', check(self.root)[0])
+
+    def invalid_index(self):
+        valid = self.index()
+        raw = valid.encode() + INDEX_TAIL
+        (self.root / 'index.md').write_bytes(raw)
+        return raw
+
+    def test_a_non_utf8_index_is_backed_up_and_rebuilt(self):
+        raw = self.invalid_index()
+        self.assertIn('- caf\ufffd notes kept by hand', brain.index_text(self.root))  # A preview writes nothing.
+        self.assertEqual(brain.internal_files(self.root, '.brain', 'index-invalid-utf8-*.md'), [])
+        self.assertTrue(brain.rebuild_index(self.root))
+        backup, = brain.internal_files(self.root, '.brain', 'index-invalid-utf8-*.md')
+        self.assertEqual(backup.read_bytes(), raw)
+        self.assertIn('- caf\ufffd notes kept by hand', self.index())
+        self.assertFalse(brain.rebuild_index(self.root))  # Valid now: no second backup.
+        self.assertEqual(len(brain.internal_files(self.root, '.brain', 'index-invalid-utf8-*.md')), 1)
+        found, = [f for f in brain.doctor(self.root)['findings'] if f['kind'] == 'index_backup']
+        self.assertEqual(found['paths'], ['.brain/' + backup.name])
+        self.assert_valid()
+
+    def test_the_stop_hook_survives_a_non_utf8_index(self):
+        self.invalid_index()
+        self.turn('Remember the invalid index fix.', 'Done.')
+        self.assertEqual(self.index().count('caf\ufffd notes kept by hand'), 1)
+        self.assertEqual(len(brain.internal_files(self.root, '.brain', 'index-invalid-utf8-*.md')), 1)
+
+    def test_file_answer_recovers_a_non_utf8_index_before_writing_the_page(self):
+        self.write('raw/fact.md', '# Fact\n\nA fact.\n')
+        raw = self.invalid_index()
+        result = brain.file_answer(self.root, 'Invalid index answer', 'It works.', ['raw/fact.md'])
+        backup, = brain.internal_files(self.root, '.brain', 'index-invalid-utf8-*.md')
+        self.assertEqual(backup.read_bytes(), raw)
+        self.assertIn('wiki/topics/invalid-index-answer', self.index())
+        self.assertIn('- caf\ufffd notes kept by hand', self.index())
+        self.assertIn('Invalid index answer', (self.root / 'log.md').read_text())
+        self.assertEqual(result['path'], 'wiki/topics/invalid-index-answer.md')
+        self.assert_valid()
+
+    def test_migrate_dry_run_reads_a_non_utf8_index(self):
+        self.invalid_index()
+        def vault_state():
+            return {
+                str(path.relative_to(self.root)): (
+                    path.stat().st_mtime_ns,
+                    path.read_bytes() if path.is_file() else None,
+                )
+                for path in [self.root, *self.root.rglob('*')]
+            }
+        before = vault_state()
+        code, result = self.cli('run', 'migrate')
+        self.assertEqual(code, 0, result)
+        self.assertTrue(result['index']['changed'])
+        self.assertGreaterEqual(result['changes'], 1)
+        self.assertFalse(result['applied'])
+        self.assertEqual(vault_state(), before)  # No writes, new files, or directory changes.
+        self.assertEqual(brain.internal_files(self.root, '.brain', 'index-invalid-utf8-*.md'), [])
+
+    def test_a_failed_index_backup_leaves_index_md_untouched(self):
+        raw = self.invalid_index()
+        real = brain.atomic_write
+
+        def failing(path, text):
+            if isinstance(text, bytes):
+                raise OSError('disk full')
+            real(path, text)
+        with patch.object(brain, 'atomic_write', failing), self.assertRaisesRegex(OSError, 'disk full'):
+            brain.rebuild_index(self.root)
+        self.assertEqual((self.root / 'index.md').read_bytes(), raw)
+
+    def test_the_index_backup_is_durable_before_index_md_is_replaced(self):
+        self.invalid_index()
+        events, real_write, real_sync = [], brain.atomic_write, brain.sync_dir
+
+        def write(path, text):
+            events.append(('write', Path(path).name if Path(path).name == 'index.md' else 'backup'))
+            real_write(path, text)
+
+        def sync(path):
+            events.append(('sync', Path(path).name))
+            real_sync(path)
+        with patch.object(brain, 'atomic_write', write), patch.object(brain, 'sync_dir', sync):
+            brain.rebuild_index(self.root)
+        self.assertEqual(events, [('write', 'backup'), ('sync', '.brain'), ('write', 'index.md')])
+
+    def test_an_index_backup_sync_error_leaves_index_md_untouched(self):
+        import errno
+        import stat
+        raw = self.invalid_index()
+        real_open, real_fsync = os.open, os.fsync
+
+        def bad_open(path, *args, **kwargs):
+            if Path(path).name == '.brain':
+                raise OSError(errno.EIO, 'I/O error')
+            return real_open(path, *args, **kwargs)
+
+        def bad_fsync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError(errno.EIO, 'I/O error')
+            return real_fsync(fd)
+        for name, fake in (('open', bad_open), ('fsync', bad_fsync)):
+            with self.subTest(name), patch.object(os, name, fake), self.assertRaisesRegex(OSError, 'I/O error'):
+                brain.rebuild_index(self.root)
+            self.assertEqual((self.root / 'index.md').read_bytes(), raw)
+
+    def test_an_unsupported_directory_fsync_is_not_an_error(self):
+        import errno
+        import stat
+        self.invalid_index()
+        real_fsync = os.fsync
+
+        def fsync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError(errno.EINVAL, 'Invalid argument')
+            return real_fsync(fd)
+        with patch.object(os, 'fsync', fsync):
+            self.assertTrue(brain.rebuild_index(self.root))
+
+    def test_migrate_counts_an_invalid_index_whose_decoded_text_is_current(self):
+        valid = self.index().encode()
+        (self.root / 'index.md').write_bytes(valid + INDEX_TAIL)
+        brain.rebuild_index(self.root)  # Current text with U+FFFD; now make the bytes invalid again.
+        (self.root / 'index.md').write_bytes(valid + INDEX_TAIL)
+        self.assertEqual(brain.index_text(self.root), brain.read_index(self.root / 'index.md')[0])
+        plan = brain.migrate(self.root)
+        self.assertTrue(plan['index']['changed'])
+        self.assertGreaterEqual(plan['changes'], 1)
+        self.assertTrue(brain.migrate(self.root, apply=True)['applied'])
+        self.assertEqual(len(brain.internal_files(self.root, '.brain', 'index-invalid-utf8-*.md')), 2)  # Setup made one.
+        self.assertEqual(brain.read_index(self.root / 'index.md')[1], None)
+        self.assertEqual(brain.migrate(self.root)['changes'], 0)
 
     def test_index_command_rebuilds_the_catalog(self):
         self.write('wiki/topics/manual.md', META + '# Manual page\n\nWritten by hand.\n')

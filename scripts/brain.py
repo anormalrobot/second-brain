@@ -144,6 +144,21 @@ def atomic_write(path, text):
             os.unlink(name)
 
 
+def sync_dir(path):
+    """fsync a directory so a file just renamed into it survives power loss; a no-op where directories cannot be
+    opened (Windows)."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def load_json(path, default):
     if not path.exists():
         return default
@@ -1251,14 +1266,22 @@ def rebuild_index(root, overlay=None):
     index.md that is not valid UTF-8 is first copied byte for byte to .brain/index-invalid-utf8-*.md (doctor reports
     it), then rewritten from its replacement-decoded text."""
     root = Path(root).resolve()
-    text = index_text(root, overlay)
+    return write_index(root, index_text(root, overlay))
+
+
+def write_index(root, text):
+    """Write text as index.md when it differs, backing up an invalid-UTF-8 original first (see rebuild_index). The
+    backup's directory is synced before index.md is replaced, so a crash cannot keep the new index and lose the
+    original bytes. True when it was written."""
     path = root / 'index.md'
     old, invalid = read_index(path)
     if path.is_file() and invalid is None and old == text:
         return False
     if invalid is not None:
         stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')
-        atomic_write(internal(root, f'.brain/{INDEX_BACKUP}'.replace('*', f'{stamp}-{uuid.uuid4().hex[:6]}')), invalid)
+        backup = internal(root, f'.brain/{INDEX_BACKUP}'.replace('*', f'{stamp}-{uuid.uuid4().hex[:6]}'))
+        atomic_write(backup, invalid)
+        sync_dir(backup.parent)
     atomic_write(path, text)
     return True
 
@@ -1381,9 +1404,10 @@ def file_answer(root, title, text, sources=(), slug=None, update=False, expected
             issues = [i for i in after if i.startswith(relative + ':') or i not in before]
             if issues:
                 raise ValueError('Structural validation failed: ' + '; '.join(issues[:5]))
+        if read_index(root / 'index.md')[1] is not None:  # Recover (back up and rewrite) before touching the page.
+            rebuild_index(root)
         atomic_write(page, out)
-        if index != (root / 'index.md').read_text(encoding='utf-8'):
-            atomic_write(root / 'index.md', index)
+        write_index(root, index)
         atomic_write(root / 'log.md', log)
         sha = digest(page.read_bytes())  # Read under the lock: exactly the page this call wrote.
     return {'path': relative, 'sha256': sha}
@@ -1877,7 +1901,7 @@ def migration_plan(root):
               'kept (not empty)' if any(decisions.iterdir()) else 'remove')
     checkpoints = old_checkpoints(root)
     overlay = {'AGENTS.md': AGENTS_TEMPLATE} if agents_state == 'refresh' else {}
-    old = (root / 'index.md').read_text(encoding='utf-8') if (root / 'index.md').is_file() else ''
+    old = read_index(root / 'index.md')[0]
     index = index_text(root, overlay)
     kept = len(rescued(root, old, index_catalog(root, overlay), overlay)) if not index_markers(old) else 0
     changes = len(checkpoints) + (agents_state == 'refresh') + (folder == 'remove') + (index != old)

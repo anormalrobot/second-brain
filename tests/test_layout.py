@@ -288,6 +288,51 @@ class IndexCatalogTests(LayoutCase):
         self.assertEqual(self.index().count('caf\ufffd notes kept by hand'), 1)
         self.assertEqual(len(brain.internal_files(self.root, '.brain', 'index-invalid-utf8-*.md')), 1)
 
+    def test_file_answer_recovers_a_non_utf8_index_before_writing_the_page(self):
+        self.write('raw/fact.md', '# Fact\n\nA fact.\n')
+        raw = self.invalid_index()
+        result = brain.file_answer(self.root, 'Invalid index answer', 'It works.', ['raw/fact.md'])
+        backup, = brain.internal_files(self.root, '.brain', 'index-invalid-utf8-*.md')
+        self.assertEqual(backup.read_bytes(), raw)
+        self.assertIn('wiki/topics/invalid-index-answer', self.index())
+        self.assertIn('- caf\ufffd notes kept by hand', self.index())
+        self.assertIn('Invalid index answer', (self.root / 'log.md').read_text())
+        self.assertEqual(result['path'], 'wiki/topics/invalid-index-answer.md')
+        self.assert_valid()
+
+    def test_migrate_dry_run_reads_a_non_utf8_index(self):
+        self.invalid_index()
+        code, result = self.cli('run', 'migrate')
+        self.assertEqual(code, 0, result)
+        self.assertEqual(brain.internal_files(self.root, '.brain', 'index-invalid-utf8-*.md'), [])
+
+    def test_a_failed_index_backup_leaves_index_md_untouched(self):
+        raw = self.invalid_index()
+        real = brain.atomic_write
+
+        def failing(path, text):
+            if isinstance(text, bytes):
+                raise OSError('disk full')
+            real(path, text)
+        with patch.object(brain, 'atomic_write', failing), self.assertRaisesRegex(OSError, 'disk full'):
+            brain.rebuild_index(self.root)
+        self.assertEqual((self.root / 'index.md').read_bytes(), raw)
+
+    def test_the_index_backup_is_durable_before_index_md_is_replaced(self):
+        self.invalid_index()
+        events, real_write, real_sync = [], brain.atomic_write, brain.sync_dir
+
+        def write(path, text):
+            events.append(('write', Path(path).name if Path(path).name == 'index.md' else 'backup'))
+            real_write(path, text)
+
+        def sync(path):
+            events.append(('sync', Path(path).name))
+            real_sync(path)
+        with patch.object(brain, 'atomic_write', write), patch.object(brain, 'sync_dir', sync):
+            brain.rebuild_index(self.root)
+        self.assertEqual(events, [('write', 'backup'), ('sync', '.brain'), ('write', 'index.md')])
+
     def test_index_command_rebuilds_the_catalog(self):
         self.write('wiki/topics/manual.md', META + '# Manual page\n\nWritten by hand.\n')
         self.assertIn('wiki/topics/manual.md: unreachable from index.md', check(self.root)[0])

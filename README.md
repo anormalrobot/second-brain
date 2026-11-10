@@ -299,6 +299,9 @@ second-brain also shares memory between agents working together in one project.
 - **CLI workers** (`codex exec` or `claude -p` started in the project) are ordinary
   sessions: they load memory and record their turns. Start them with
   `SECOND_BRAIN_RUN=RUN` to attach them to a run board.
+  Workers that only review or test should start with `SECOND_BRAIN_AUTOMATION=off`
+  (also `0` or `false`): second-brain then does nothing for that run, so it is not
+  recorded as a separate session with your brief as its `### Request`.
 - **Run boards** coordinate the work: tasks with claims, leases, dependencies,
   progress notes, and results. Each board is a generated note in `memory/runs/`,
   linked from the project note (and, once closed, from `log.md`).

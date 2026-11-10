@@ -157,6 +157,28 @@ class IndexCatalogTests(LayoutCase):
         self.assertIn('Quoted:', first.split(brain.INDEX_END, 1)[1])
         self.assert_valid()
 
+    def test_raw_sources_get_a_one_line_summary(self):
+        self.write('raw/slides.pdf', 'pdf')
+        self.write('raw/notes.md', '# Notes\n\nMeeting notes about the sync design.\n')
+        self.write('raw/paper.txt', 'paper')
+        brain.scan(self.root)
+        lease = brain.begin(self.root, 'raw/paper.txt')
+        self.write(lease['output'], META + '# Paper\n\nSummary of [[raw/paper.txt|the paper]].\n')
+        brain.finish(self.root, 'raw/paper.txt', lease['token'])
+        raw = self.index().split('## Raw sources', 1)[1].split(brain.INDEX_END, 1)[0]
+        self.assertIn('- [[raw/slides.pdf|slides.pdf]] — not ingested yet', raw)
+        self.assertIn('- [[raw/notes|notes.md]] — Meeting notes about the sync design.', raw)
+        self.assertIn('- [[raw/paper.txt|paper.txt]] — summarized in [[wiki/sources/paper|Paper]]', raw)
+        self.assert_valid()
+
+    def test_finish_with_an_explicit_output_links_it_from_the_raw_line(self):
+        self.write('raw/talk.txt', 'talk')
+        brain.scan(self.root)
+        lease = brain.begin(self.root, 'raw/talk.txt')
+        self.write('wiki/topics/talk.md', META + '# Talk notes\n\nFrom [[raw/talk.txt|the talk]].\n')
+        brain.finish(self.root, 'raw/talk.txt', lease['token'], ['wiki/topics/talk.md'])
+        self.assertIn('- [[raw/talk.txt|talk.txt]] — summarized in [[wiki/topics/talk|Talk notes]]', self.index())
+
     def test_index_command_rebuilds_the_catalog(self):
         self.write('wiki/topics/manual.md', META + '# Manual page\n\nWritten by hand.\n')
         self.assertIn('wiki/topics/manual.md: unreachable from index.md', check(self.root)[0])

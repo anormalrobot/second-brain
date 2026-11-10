@@ -443,13 +443,14 @@ def finish(root, key, token, outputs=None, error=None):
             issues, notes, links = note_issues(root, outputs, {'index.md': index})
             if issues:
                 raise ValueError('Structural validation failed: ' + '; '.join(issues[:5]))
-            rebuild_index(root)
             entry.update(state='processed', outputs=hashes, error=None,
                          receipt={'checked_at': timestamp(), 'notes': notes, 'links': links,
                                   'scope': 'file structure and direct source links; not factual verification'})
         entry['attempts'][-1].update(outcome=entry['state'], ended=timestamp())
         entry.pop('token', None)
         save_json(root / LEDGER, ledger)
+        if entry['state'] == 'processed':
+            rebuild_index(root)  # After the ledger, so the raw source's line links its page.
         return {'id': entry['id'], 'state': entry['state']}
 
 
@@ -1093,12 +1094,43 @@ def index_pages(root, overlay):
             line += f' · [[{link_target(root, records_index(relative))}|automatic records]]'
         found.setdefault(section, []).append((key, line))
     raw = root / 'raw'
+    try:
+        ledger = load_ledger(root)['sources'].values()
+    except (ValueError, OSError, AttributeError):
+        ledger = []  # A broken ledger is reported by coverage and doctor, not here.
+    pages = {}  # Raw path -> the source pages the ledger records for it.
+    for entry in ledger:
+        for name in entry.get('paths', []) if isinstance(entry, dict) else []:
+            found_pages = [*entry.get('outputs', {}), entry.get('output')]
+            pages.setdefault(name, []).extend(n for n in found_pages if isinstance(n, str))
     for path in sorted(raw.rglob('*')) if raw.is_dir() else []:
         relative = path.relative_to(root).as_posix()
         if (path.is_file() and not path.is_symlink() and not UNLINKABLE.search(relative) and Path(relative).suffix
                 and not any(part.startswith('.') for part in path.relative_to(raw).parts)):
-            found.setdefault('Raw sources', []).append(((relative,), f'- [[{link_target(root, relative)}|{path.name}]]'))
+            summary = raw_summary(root, relative, pages.get(relative, []), overlay)
+            line = f'- [[{link_target(root, relative)}|{path.name}]] — {summary}'
+            found.setdefault('Raw sources', []).append(((relative,), line))
     return found
+
+
+def raw_summary(root, relative, pages, overlay):
+    """A raw source's catalog summary: a link to the source page the ledger records for it (pages), else the first
+    prose of a Markdown source, else 'not ingested yet'."""
+    for name in sorted(dict.fromkeys(pages), key=lambda n: not n.startswith('wiki/sources/')):
+        try:
+            path = scoped(root, name) if name.endswith('.md') and not UNLINKABLE.search(name) else None
+        except ValueError:
+            path = None  # A page outside the vault or in a hidden folder is never linked.
+        text = path and (overlay.get(name) or (path.read_text(encoding='utf-8', errors='replace')[:16384]
+                                               if path.is_file() else ''))
+        if text:
+            return f'summarized in [[{link_target(root, name)}|{note_title(name, text)}]]'
+    if relative.endswith('.md'):
+        with (root / relative).open(encoding='utf-8', errors='replace') as handle:
+            summary = note_summary(handle.read(16384))
+        if summary:
+            return summary
+    return 'not ingested yet'
 
 
 def index_catalog(root, overlay):

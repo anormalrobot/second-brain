@@ -262,6 +262,32 @@ class IndexCatalogTests(LayoutCase):
         self.assertNotIn('wiki/topics/open', kept)
         self.assertIn('wiki/topics/locked.md: unreadable', check(self.root)[0])
 
+    def invalid_index(self):
+        valid = self.index()
+        raw = valid.encode() + b'\n- caf\xe9 notes kept by hand\n'
+        (self.root / 'index.md').write_bytes(raw)
+        return raw
+
+    def test_a_non_utf8_index_is_backed_up_and_rebuilt(self):
+        raw = self.invalid_index()
+        self.assertIn('- caf\ufffd notes kept by hand', brain.index_text(self.root))  # A preview writes nothing.
+        self.assertEqual(brain.internal_files(self.root, '.brain', 'index-invalid-utf8-*.md'), [])
+        self.assertTrue(brain.rebuild_index(self.root))
+        backup, = brain.internal_files(self.root, '.brain', 'index-invalid-utf8-*.md')
+        self.assertEqual(backup.read_bytes(), raw)
+        self.assertIn('- caf\ufffd notes kept by hand', self.index())
+        self.assertFalse(brain.rebuild_index(self.root))  # Valid now: no second backup.
+        self.assertEqual(len(brain.internal_files(self.root, '.brain', 'index-invalid-utf8-*.md')), 1)
+        found, = [f for f in brain.doctor(self.root)['findings'] if f['kind'] == 'index_backup']
+        self.assertEqual(found['paths'], ['.brain/' + backup.name])
+        self.assert_valid()
+
+    def test_the_stop_hook_survives_a_non_utf8_index(self):
+        self.invalid_index()
+        self.turn('Remember the invalid index fix.', 'Done.')
+        self.assertEqual(self.index().count('caf\ufffd notes kept by hand'), 1)
+        self.assertEqual(len(brain.internal_files(self.root, '.brain', 'index-invalid-utf8-*.md')), 1)
+
     def test_index_command_rebuilds_the_catalog(self):
         self.write('wiki/topics/manual.md', META + '# Manual page\n\nWritten by hand.\n')
         self.assertIn('wiki/topics/manual.md: unreachable from index.md', check(self.root)[0])

@@ -241,7 +241,7 @@ class SyntheticPromptTests(FinalCase):
         text = record.read_text()
         self.assertEqual(text.count('### System notification'), 2)
         self.assertEqual(text.count('### Request'), 1)
-        self.assertIn('<agent-message from=', text)
+        self.assertIn('[agent-message] from worker-1: lint results passed', text)
 
 
 class DottedProjectNoteTests(FinalCase):

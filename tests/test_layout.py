@@ -203,5 +203,37 @@ class CheckpointStatusTests(LayoutCase):
         self.assert_valid()
 
 
+TASK = ('<task-notification>\n<task-id>bdr1s2jxy</task-id>\n<tool-use-id>toolu_01</tool-use-id>\n'
+        '<output-file>/tmp/tasks/bdr1s2jxy.output</output-file>\n<status>completed</status>\n'
+        '<summary>Background command "Run review" completed (exit code 0)</summary>\n<result>LONG_RESULT ' + 'x ' * 500
+        + '</result>\n</task-notification>')
+MESSAGE = ('<agent-message from="a6e4f64054edae430">\n[Subagent hand-back] The text below is the final report of a '
+           'subagent. The report follows:\n  Both packages are written and tested.\n  \n  REST_OF_REPORT ' + 'y ' * 500
+           + '\n</agent-message>')
+
+
+class SlimRecordTests(LayoutCase):
+    def test_client_notices_are_recorded_as_one_line_stubs_with_the_full_response(self):
+        self.turn(TASK, 'Review finished; RESPONSE_ONE.', prompt_id='p1')
+        self.turn(MESSAGE, 'Merged the report; RESPONSE_TWO.', prompt_id='p2')
+        text = self.records()[0].read_text()
+        self.assertIn('[task-notification] task bdr1s2jxy completed: Background command "Run review" completed '
+                      '(exit code 0)', text)
+        self.assertIn('[agent-message] from a6e4f64054edae430: Both packages are written and tested.', text)
+        for gone in ('LONG_RESULT', 'output-file', 'REST_OF_REPORT', 'Subagent hand-back'):
+            self.assertNotIn(gone, text)
+        self.assertEqual(text.count('### System notification'), 2)
+        self.assertIn('RESPONSE_ONE', text)
+        self.assertIn('RESPONSE_TWO', text)
+        self.assertLess(len(text), 3000)
+
+    def test_subagents_without_an_agent_type_are_still_recorded(self):
+        # No SubagentStop field reliably identifies Claude Code's prompt-suggestion subagent (it arrives without an
+        # agent_type, like other internal agents), so its result is kept rather than guessed away.
+        self.turn('hello', 'Hi.')
+        self.handle('SubagentStop', agent_id='a5d48fdf6631aa', last_assistant_message='continue')
+        self.assertIn('## Subagent agent (a5d48fdf6631)', self.records()[0].read_text())
+
+
 if __name__ == '__main__':
     unittest.main()

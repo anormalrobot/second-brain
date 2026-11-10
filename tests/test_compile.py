@@ -184,7 +184,7 @@ class SessionRecordTests(CompileCase):
         self.assertEqual(text.count('### System notification'), 1)
         self.assertEqual(text.count('### Request'), 1)
         self.assertLess(text.index('### System notification'), text.index('real user request'))
-        self.assertIn('<task-notification>', text)
+        self.assertIn('[task-notification]: background build task finished', text)
 
     def test_prompt_id_identifies_turns(self):
         self.handle('UserPromptSubmit', prompt='same', prompt_id='p-1')

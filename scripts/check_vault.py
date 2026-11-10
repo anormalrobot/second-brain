@@ -84,6 +84,14 @@ def contained(root, path):
     return path.resolve().is_relative_to(root)
 
 
+def readable(path):
+    """A file's UTF-8 text, or None when it cannot be read."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 def check(root, overlay=None, edges=None):
     """overlay maps vault-relative paths to text checked as if written there (nothing is written). A dict passed
     as edges receives each note's resolved link targets (wikilinks and Markdown links outside code)."""
@@ -143,7 +151,11 @@ def check(root, overlay=None, edges=None):
             graph[source].add(destination)
 
     for note in notes:
-        original = overlay[note] if note in overlay else note.read_text(encoding="utf-8")
+        original = overlay[note] if note in overlay else readable(note)
+        if original is None:
+            # Reported, never raised: its links are unknown, so it adds no edges and callers stay conservative.
+            errors.append(f"{note.relative_to(root)}: unreadable")
+            continue
         if note.relative_to(root).parts[0] in {"memory", "wiki"}:
             frontmatter = re.match(r"\A---\n(.*?)\n---(?:\n|$)", original, re.S)
             fields = dict(re.findall(r"^([a-z_]+):[ \t]*([^\n]*)$", frontmatter.group(1), re.M)) if frontmatter else {}
@@ -168,11 +180,11 @@ def check(root, overlay=None, edges=None):
     agents = root / "AGENTS.md"
     if claude.is_file() and not contained(root, claude):
         pass  # Already reported above as escaping; never opened.
-    elif not claude.is_file() or claude.read_text(encoding="utf-8").strip() != "@AGENTS.md":
+    elif not claude.is_file() or (readable(claude) or "").strip() != "@AGENTS.md":
         errors.append("CLAUDE.md: expected the shared @AGENTS.md import")
     if agents.is_file() and not contained(root, agents):
         pass
-    elif not agents.is_file() or not agents.read_text(encoding="utf-8").strip():
+    elif not agents.is_file() or not (readable(agents) or "").strip():
         errors.append("AGENTS.md: shared instructions are missing or empty")
     graph.setdefault(claude, set()).add(agents)
 

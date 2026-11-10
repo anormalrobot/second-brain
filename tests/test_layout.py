@@ -248,6 +248,20 @@ class IndexCatalogTests(LayoutCase):
         self.assertIn('[[wiki/topics/open|Open page]] — Readable.', index)
         self.assertIn('- [[raw/locked|locked.md]] — not ingested yet', index)
 
+    def test_a_legacy_index_rebuild_keeps_links_to_unreadable_notes(self):
+        self.write('wiki/topics/locked.md', META + '# Locked\n\nCannot be read.\n')
+        self.write('wiki/topics/open.md', META + '# Open page\n\nReadable.\n')
+        (self.root / 'index.md').write_text('# Shared memory map\n\n- [[wiki/topics/locked|Locked]]\n'
+                                            '- [[wiki/topics/open|Open]]\n- [[AGENTS]]\n')
+        self.unreadable('wiki/topics/locked.md')
+        brain.rebuild_index(self.root)
+        index = self.index()
+        self.assertIn('[[wiki/topics/open|Open page]] — Readable.', index)
+        kept = index.split('## Hand-written', 1)[1]
+        self.assertIn('- [[wiki/topics/locked|Locked]]', kept)  # Its reachability cannot be established.
+        self.assertNotIn('wiki/topics/open', kept)
+        self.assertIn('wiki/topics/locked.md: unreadable', check(self.root)[0])
+
     def test_index_command_rebuilds_the_catalog(self):
         self.write('wiki/topics/manual.md', META + '# Manual page\n\nWritten by hand.\n')
         self.assertIn('wiki/topics/manual.md: unreachable from index.md', check(self.root)[0])

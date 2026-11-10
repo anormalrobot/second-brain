@@ -9,6 +9,7 @@ import re
 import sys
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
@@ -423,6 +424,28 @@ class MigrationTests(LayoutCase):
         self.assertEqual((done['agents'], done['decisions_folder']), ('kept (edited)', 'kept (not empty)'))
         self.assertTrue((self.root / 'AGENTS.md').read_text().endswith('My own rule.\n'))
         self.assertTrue((self.root / 'memory/decisions/kept.md').is_file())
+
+    def test_migration_snapshot_contains_the_pre_migration_bytes(self):
+        checkpoint = self.old_vault()
+        before = self.files()
+        code, result = self.cli('run', 'migrate', '--apply')
+        self.assertEqual(code, 0, result)
+        with zipfile.ZipFile(self.root / result['snapshot']) as archive:
+            for relative in ('index.md', 'AGENTS.md', 'log.md', checkpoint):
+                self.assertEqual(archive.read('vault/' + relative), before[relative], relative)
+        self.assertNotEqual((self.root / 'index.md').read_bytes(), before['index.md'])
+        self.assertIn(b'status: active', before[checkpoint])
+        self.assertIn('status: recorded', (self.root / checkpoint).read_text())
+
+    def test_migration_stops_before_changing_notes_if_snapshot_fails(self):
+        self.old_vault()
+        before = self.files()
+        with patch.object(brain, '_snapshot', side_effect=OSError('snapshot unavailable')):
+            code, result = self.cli('run', 'migrate', '--apply')
+        self.assertEqual(code, 1, result)
+        self.assertIn('snapshot unavailable', result['error'])
+        self.assertEqual(self.files(), before)
+        self.assertTrue((self.root / 'memory/decisions').is_dir())
 
 
 if __name__ == '__main__':

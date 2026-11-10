@@ -639,9 +639,10 @@ class GuardTests(VaultCase):
         (self.root / 'raw/article.txt').write_text('Original source.\n')
         brain.scan(self.root)
         lease = brain.begin(self.root, 'raw/article.txt')
-        (self.root / 'wiki/sources/orphan.md').write_text(meta('# Orphan\n\n[[raw/article.txt]]\n'))
+        # wiki/ pages are catalogued in index.md; a note outside the catalog must still be linked from somewhere.
+        (self.root / 'memory/sessions/orphan.md').write_text(meta('# Orphan\n\n[[raw/article.txt]]\n'))
         with self.assertRaisesRegex(ValueError, 'orphan.md: unreachable'):
-            brain.finish(self.root, 'raw/article.txt', lease['token'], ['wiki/sources/orphan.md'])
+            brain.finish(self.root, 'raw/article.txt', lease['token'], ['memory/sessions/orphan.md'])
 
 
 class StaleAliasTests(VaultCase):

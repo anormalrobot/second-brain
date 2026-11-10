@@ -137,5 +137,40 @@ class IndexCatalogTests(LayoutCase):
         self.assert_valid()
 
 
+class SourceIngestTests(LayoutCase):
+    def test_finish_defaults_to_the_wiki_sources_page_begin_names(self):
+        (self.root / 'raw/Field Notes.txt').write_text('Original source.\n')
+        brain.scan(self.root)
+        lease = brain.begin(self.root, 'raw/Field Notes.txt')
+        self.assertEqual(lease['output'], 'wiki/sources/field-notes.md')
+        with self.assertRaisesRegex(ValueError, 'wiki/sources/field-notes.md'):
+            brain.finish(self.root, 'raw/Field Notes.txt', lease['token'])
+        self.write('wiki/sources/field-notes.md', META + '# Field notes\n\nSummary of [[raw/Field Notes.txt|the notes]].\n')
+        code, result = self.cli('run', 'finish', 'raw/Field Notes.txt', '--token', lease['token'])
+        self.assertEqual((code, result['state']), (0, 'processed'), result)
+        self.assertIn('[[wiki/sources/field-notes|Field notes]] — Summary of the notes.',
+                      self.index().split('## Wiki sources', 1)[1])
+        self.assertTrue(brain.coverage(self.root)['complete'])
+        self.assert_valid()
+
+    def test_doctor_names_the_next_step_for_unregistered_raw_files(self):
+        (self.root / 'raw/new.pdf').write_bytes(b'%PDF')
+        found, = [f for f in brain.doctor(self.root)['findings'] if f['kind'] == 'unregistered_source']
+        self.assertEqual(found['paths'], ['raw/new.pdf'])
+        for step in ('run scan', 'run begin', 'run finish'):
+            self.assertIn(step, found['detail'])
+        brain.scan(self.root)
+        self.assertNotIn('unregistered_source', {f['kind'] for f in brain.doctor(self.root)['findings']})
+
+    def test_scan_ignores_the_retired_transcript_manifest(self):
+        (self.root / 'raw/clip.txt').write_text('transcript\n')
+        key = brain.digest(b'transcript\n')
+        (self.root / 'inbox/transcript-manifest.json').write_text(
+            json.dumps({'sources': [{'sha256': key, 'video_url': 'https://example.com/v'}]}))
+        brain.scan(self.root)
+        entry = brain.load_ledger(self.root)['sources'][key]
+        self.assertNotIn('source_url', entry)
+
+
 if __name__ == '__main__':
     unittest.main()

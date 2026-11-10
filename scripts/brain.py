@@ -252,8 +252,6 @@ def scan(root):
     root = Path(root).resolve()
     with writer(root):
         ledger = load_ledger(root)
-        intake = load_json(root / 'inbox/transcript-manifest.json', {'sources': []})
-        urls = {e['sha256']: e.get('video_url') for e in intake.get('sources', [])}
         for entry in ledger['sources'].values():
             entry['paths'] = []
         for path in sorted((root / 'raw').rglob('*')):
@@ -267,7 +265,7 @@ def scan(root):
             entry = ledger['sources'].setdefault(key, {
                 'id': key, 'bytes': len(data), 'state': 'pending', 'paths': [],
                 'seen_paths': [], 'attempts': [], 'outputs': {}, 'receipt': None,
-                'first_seen': timestamp(), 'source_url': urls.get(key),
+                'first_seen': timestamp(),
             })
             entry['paths'].append(relative)
             if relative not in entry['seen_paths']:
@@ -340,7 +338,13 @@ def begin(root, key):
         entry.update(state='processing', token=token)
         entry['attempts'].append({'token': token, 'started': timestamp(), 'outcome': 'processing'})
         save_json(root / LEDGER, ledger)
-        return {'id': entry['id'], 'token': token, 'state': 'processing'}
+        return {'id': entry['id'], 'token': token, 'state': 'processing', 'output': source_page(entry)}
+
+
+def source_page(entry):
+    """The default source summary page of a ledger entry: wiki/sources/ plus a slug of its first raw file name."""
+    stem = Path(entry['paths'][0]).stem if entry['paths'] else ''
+    return 'wiki/sources/' + (re.sub(r'[^a-z0-9]+', '-', stem.casefold()).strip('-')[:64].strip('-') or 'source') + '.md'
 
 
 def finish(root, key, token, outputs=None, error=None):
@@ -354,8 +358,9 @@ def finish(root, key, token, outputs=None, error=None):
             entry.update(state='failed', error=error)
         else:
             verify_raw(root, entry)
-            if not outputs:
-                raise ValueError('At least one attributed output note is required')
+            outputs = outputs or [source_page(entry)]
+            if not scoped(root, outputs[0]).is_file():
+                raise ValueError(f'Write the source summary page {outputs[0]} (linking the raw source) or pass --output NOTE')
             hashes = {}
             raw_links = {link_target(root, p) for p in entry['paths']}
             for relative in outputs:
@@ -365,9 +370,11 @@ def finish(root, key, token, outputs=None, error=None):
                 if not (link_targets(path.read_text(encoding='utf-8')) & raw_links):
                     raise ValueError('Each output must link directly to a current raw source path')
                 hashes[relative] = digest(path.read_bytes())
-            issues, notes, links = note_issues(root, outputs)
+            index = index_text(root)  # The source page is catalogued, so it is reachable.
+            issues, notes, links = note_issues(root, outputs, {'index.md': index})
             if issues:
                 raise ValueError('Structural validation failed: ' + '; '.join(issues[:5]))
+            rebuild_index(root)
             entry.update(state='processed', outputs=hashes, error=None,
                          receipt={'checked_at': timestamp(), 'notes': notes, 'links': links,
                                   'scope': 'file structure and direct source links; not factual verification'})
@@ -1559,6 +1566,12 @@ def doctor(root, as_of=None, stale_days=90):
             if meta.get('claim_key') and meta.get('claim_value') and meta.get('status') != 'superseded':
                 claims.setdefault(meta['claim_key'], []).append((name, meta['claim_value']))
     findings += content_findings(root, texts, edges)
+    covered = coverage(root)
+    if covered['unregistered_paths']:
+        findings.append({'kind': 'unregistered_source', 'paths': covered['unregistered_paths'],
+                         'detail': 'Raw files not in the source ledger. Next: run scan; then, per source, run begin SOURCE, '
+                                   'write its summary page under wiki/sources/ (begin names it) linking the raw file, '
+                                   'and run finish SOURCE --token TOKEN.'})
     try:
         queued = [p.name for p in internal_files(root, SPOOL) if SPOOL_NAME.fullmatch(p.name)]
         failed = [p.name for p in internal_files(root, SPOOL + '/failed')]
@@ -1582,7 +1595,7 @@ def doctor(root, as_of=None, stale_days=90):
         if len({value for _, value in values}) > 1:
             findings.append({'kind': 'conflicting_claims', 'claim_key': key, 'evidence': values,
                              'detail': 'Multiple explicit values; semantic resolution requires review.'})
-    return {'as_of': today.isoformat(), 'findings': findings, 'coverage': coverage(root),
+    return {'as_of': today.isoformat(), 'findings': findings, 'coverage': covered,
             'notes': notes, 'links': links,
             'review_checklist': ['Read recent handoffs and promote reusable findings.',
                                  'Check unsupported claims against cited raw sources.',
@@ -1715,7 +1728,7 @@ HELP = {
     'scan': 'Register files under raw/ in the source ledger',
     'coverage': 'Report which raw sources are processed',
     'begin': 'Start processing a raw source; returns a token',
-    'finish': 'Finish processing with attributed --output notes, or record --error',
+    'finish': 'Finish processing: the wiki/sources/ page begin named, or --output notes; or record --error',
     'checkpoint': 'Save project progress with evidence and a next step (--complete: a final handoff)',
     'brief': 'Print the session brief: profile, project note, latest checkpoint or handoff, latest record',
     'compile': 'List automatic records and closed run boards to fold into curated notes; --done TOKEN marks them compiled, --status only reports',

@@ -90,6 +90,12 @@ Restart the session afterward.
 Codex skips hooks until this review is complete; installing the plugin alone
 does not activate automatic memory. See [Codex hook activation](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks).
 
+Repeat this review after every plugin update. Codex's trust covers the plugin's
+script files, not only its hook list, so an update leaves the hooks untrusted
+even when `hooks.json` is unchanged. Non-interactive `codex exec` runs cannot
+ask: they skip the hooks and print `hook: SessionStart Failed`. To check, run
+`codex exec "Reply OK."` in the project and look for `hook: SessionStart Completed`.
+
 ### 3. Example: remember a preference across sessions
 
 After setup, send a normal message:
@@ -352,7 +358,9 @@ lost. They are applied by the next `SessionStart`, `UserPromptSubmit`, `Stop`, o
   controls. For CLI sessions, the optional launcher below can include the vault.
 - **Normal messages do not load or save memory:** ask the agent to check
   `automation status`. If there are no `SessionStart`, `UserPromptSubmit`, or `Stop` events, restart
-  the client and check its hook settings. In Codex, review the plugin in `/hooks`.
+  the client and check its hook settings. In Codex, review the plugin in `/hooks`,
+  also after each update; `codex exec` output showing `hook: ... Failed` usually means
+  the updated hooks are not trusted yet.
   A vault existing on disk does not mean the hooks are active.
 
 <details>

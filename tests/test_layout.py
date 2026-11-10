@@ -188,5 +188,20 @@ class NoDecisionsFolderTests(LayoutCase):
                                                       if f['kind'] == 'unsupported_note' for p in f['paths']])
 
 
+class CheckpointStatusTests(LayoutCase):
+    def test_checkpoints_are_recorded_log_entries_and_handoffs_completed(self):
+        saved = brain.checkpoint(self.root, self.info['project'], 'Did it.', 'Next.', ['memory/profile.md'], checkpoint_id='c1')
+        self.assertEqual(saved['state'], 'recorded')
+        self.assertEqual(brain.frontmatter((self.root / saved['path']).read_text())['status'], 'recorded')
+        done = brain.checkpoint(self.root, self.info['project'], 'Done.', 'None.', ['memory/profile.md'],
+                                checkpoint_id='h1', complete=True)
+        self.assertEqual(brain.frontmatter((self.root / done['path']).read_text())['status'], 'completed')
+        # The project note's pointer, not a status, names the current handoff; earlier entries stay reachable.
+        self.assertIn('Latest handoff: [[' + done['path'][:-3] + '|', self.note.read_text())
+        self.assertNotIn('Latest checkpoint:', self.note.read_text())
+        self.assertNotIn('pending_compile', {f['kind'] for f in brain.doctor(self.root)['findings']})
+        self.assert_valid()
+
+
 if __name__ == '__main__':
     unittest.main()

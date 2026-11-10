@@ -1242,7 +1242,7 @@ def checkpoint(root, project, summary, next_step, evidence, *, checkpoint_id=Non
     body = f'''---
 created: {when}
 updated: {when}
-status: {'completed' if complete else 'active'}
+status: {'completed' if complete else 'recorded'}
 ---
 # {'Handoff' if complete else 'Checkpoint'} — {project_path.stem}
 
@@ -1278,7 +1278,7 @@ Project: [[{link_target(root, project)}|Project state]].
         log_text = log_path.read_text(encoding='utf-8') if log_path.exists() else ''
         if '[[' + link_target(root, relative) + '|' not in log_text:
             append_log(root, f'Saved {field.lower()} [[{link_target(root, relative)}|{checkpoint_id}]]', when)
-    return {'path': relative, 'state': 'completed' if complete else 'active'}
+    return {'path': relative, 'state': 'completed' if complete else 'recorded'}
 
 
 def brief_files(root, project=None):

@@ -921,16 +921,23 @@ class SpoolTests(OrchestrationCase):
         for number in range(10):
             runs.spool(self.root, self.backlog_item(number))
         attempts, real = [], runs.apply
+        clock = [1000.0]  # Fake monotonic clock: only a slow apply advances it, so the test ignores wall time.
+
+        class FakeTime:
+            def __getattr__(self, name):
+                return getattr(time, name)
+
+            @staticmethod
+            def monotonic():
+                return clock[0]
 
         def slow(root, item):
             attempts.append(item['key'])
-            time.sleep(0.15)
+            clock[0] += 0.15
             return real(root, item)
-        with patch.object(runs, 'apply', slow):
-            started = time.monotonic()
+        with patch.object(runs, 'apply', slow), patch.object(runs, 'time', FakeTime()):
             self.assertFalse(self.drain(seconds=0.4))
-        self.assertLess(time.monotonic() - started, 0.4 + 0.15 + 0.2)
-        self.assertLessEqual(len(attempts), 3)
+        self.assertEqual(len(attempts), 3)  # 0.15 s each: the deadline stops the fourth, 0.45 >= 0.4.
         self.assertEqual(len(self.spooled()), 10 - len(attempts))
 
     def test_own_item_is_persisted_before_a_slow_backlog(self):

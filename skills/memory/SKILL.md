@@ -114,6 +114,9 @@ the router supplies the bound project):
 2. Start CLI workers in the project with `SECOND_BRAIN_RUN=RUN codex exec "..."` or
    `SECOND_BRAIN_RUN=RUN claude -p "..."` (or `second-brain launch --run RUN codex
    ...`). Their session start shows the board and how to claim and post.
+   Workers that only review or test do not need memory: start them with
+   `SECOND_BRAIN_AUTOMATION=off` (or `0`, `false`) so the hooks do nothing and the run is
+   not recorded as a separate session with the supervisor's brief as its request.
 3. Workers: `run board claim TASK --agent NAME [--lease-minutes M]` before working
    (one claimant per task; a lease expires after 60 minutes by default and
    dependencies must be done), then `run board post TASK --agent NAME --status

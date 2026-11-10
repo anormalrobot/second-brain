@@ -1788,43 +1788,52 @@ def old_checkpoints(root):
     return found
 
 
+def migration_plan(root):
+    """What migrate would change, read without the writer lock (nothing is written)."""
+    agents = root / 'AGENTS.md'
+    text = agents.read_text(encoding='utf-8') if agents.is_file() and not agents.is_symlink() else None
+    agents_state = ('current' if text == AGENTS_TEMPLATE else 'refresh' if text is not None and
+                    digest(text.encode()) in OLD_AGENTS else 'kept (edited)')
+    decisions = root / 'memory/decisions'
+    folder = ('absent' if not decisions.is_dir() or decisions.is_symlink() else
+              'kept (not empty)' if any(decisions.iterdir()) else 'remove')
+    checkpoints = old_checkpoints(root)
+    overlay = {'AGENTS.md': AGENTS_TEMPLATE} if agents_state == 'refresh' else {}
+    old = (root / 'index.md').read_text(encoding='utf-8') if (root / 'index.md').is_file() else ''
+    index = index_text(root, overlay)
+    kept = len(rescued(root, old, index_catalog(root, overlay), overlay)) if not index_markers(old) else 0
+    changes = len(checkpoints) + (agents_state == 'refresh') + (folder == 'remove') + (index != old)
+    return {'applied': False, 'changes': changes, 'snapshot': None,
+            'index': {'changed': index != old, 'hand_written_lines': kept}, 'checkpoints': checkpoints,
+            'decisions_folder': folder, 'agents': agents_state}
+
+
 def migrate(root, apply=False, when=None):
     """Bring a vault written by an earlier release to this layout: index.md becomes the generated catalog (lines it
     would lose are kept below its end marker), checkpoints at status active become recorded, an empty
     memory/decisions/ is removed, and an AGENTS.md still equal to an older generated template is refreshed. Without
-    apply it only reports; with apply it takes a snapshot under .brain/snapshots/ first. Running it again changes
-    nothing."""
+    apply it only reports and writes nothing (not even the lock file); with apply it takes the writer lock, plans
+    again under it, and takes a snapshot under .brain/snapshots/ first. Running it again changes nothing."""
     root = Path(root).resolve()
     when = when or day()
+    report = migration_plan(root)
+    if not apply or not report['changes']:
+        return report
     with writer(root):
-        agents = root / 'AGENTS.md'
-        text = agents.read_text(encoding='utf-8') if agents.is_file() and not agents.is_symlink() else None
-        agents_state = ('current' if text == AGENTS_TEMPLATE else 'refresh' if text is not None and
-                        digest(text.encode()) in OLD_AGENTS else 'kept (edited)')
-        decisions = root / 'memory/decisions'
-        folder = ('absent' if not decisions.is_dir() or decisions.is_symlink() else
-                  'kept (not empty)' if any(decisions.iterdir()) else 'remove')
-        checkpoints = old_checkpoints(root)
-        overlay = {'AGENTS.md': AGENTS_TEMPLATE} if agents_state == 'refresh' else {}
-        old = (root / 'index.md').read_text(encoding='utf-8') if (root / 'index.md').is_file() else ''
-        index = index_text(root, overlay)
-        kept = len(rescued(root, old, index_catalog(root, overlay), overlay)) if not index_markers(old) else 0
-        changes = len(checkpoints) + (agents_state == 'refresh') + (folder == 'remove') + (index != old)
-        report = {'applied': False, 'changes': changes, 'snapshot': None,
-                  'index': {'changed': index != old, 'hand_written_lines': kept}, 'checkpoints': checkpoints,
-                  'decisions_folder': folder, 'agents': agents_state}
-        if not apply or not changes:
+        report = migration_plan(root)  # Under the lock, so the changes below match the files as they are now.
+        if not report['changes']:
             return report
+        checkpoints, folder, agents_state = report['checkpoints'], report['decisions_folder'], report['agents']
         name = f'.brain/snapshots/migrate-{datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")}-{uuid.uuid4().hex[:6]}.zip'
         internal(root, name).parent.mkdir(parents=True, exist_ok=True)
         _snapshot(root, internal(root, name))
         if agents_state == 'refresh':
-            atomic_write(agents, AGENTS_TEMPLATE)
+            atomic_write(root / 'AGENTS.md', AGENTS_TEMPLATE)
         for relative in checkpoints:
             path = scoped(root, relative, area='memory/sessions')
             atomic_write(path, set_fields(path.read_text(encoding='utf-8'), status='recorded'))
         if folder == 'remove':
-            decisions.rmdir()
+            (root / 'memory/decisions').rmdir()
         append_log(root, f'Migrated the vault layout: generated index.md catalog, {len(checkpoints)} checkpoint(s) '
                          f'recorded, memory/decisions/ {"removed" if folder == "remove" else folder}, AGENTS.md '
                          f'{"refreshed" if agents_state == "refresh" else agents_state}', when)

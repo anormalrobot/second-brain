@@ -366,9 +366,10 @@ AGENTS_0_4 = (
 
 
 class MigrationTests(LayoutCase):
-    def files(self):
+    def files(self, lock=True):
+        """Every vault file's bytes. lock=False leaves out the lock file, whose owner line each acquire rewrites."""
         return {p.relative_to(self.root).as_posix(): p.read_bytes() for p in sorted(self.root.rglob('*'))
-                if p.is_file() and p.name != 'write.flock'}
+                if p.is_file() and (lock or p.name != 'write.flock')}
 
     def old_vault(self):
         """A vault as 0.6.2 left it: an appended index, active checkpoints, an empty memory/decisions/, the old
@@ -389,6 +390,7 @@ class MigrationTests(LayoutCase):
 
     def test_dry_run_reports_and_apply_migrates_once(self):
         checkpoint = self.old_vault()
+        (self.root / '.brain/write.flock').write_text('{}')  # Any writer-lock acquire would rewrite this.
         before = self.files()
         code, plan = self.cli('run', 'migrate')
         self.assertEqual(code, 0, plan)
@@ -439,12 +441,12 @@ class MigrationTests(LayoutCase):
 
     def test_migration_stops_before_changing_notes_if_snapshot_fails(self):
         self.old_vault()
-        before = self.files()
+        before = self.files(lock=False)  # --apply takes the writer lock, which rewrites its owner line.
         with patch.object(brain, '_snapshot', side_effect=OSError('snapshot unavailable')):
             code, result = self.cli('run', 'migrate', '--apply')
         self.assertEqual(code, 1, result)
         self.assertIn('snapshot unavailable', result['error'])
-        self.assertEqual(self.files(), before)
+        self.assertEqual(self.files(lock=False), before)
         self.assertTrue((self.root / 'memory/decisions').is_dir())
 
 

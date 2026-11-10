@@ -127,6 +127,21 @@ class IndexCatalogTests(LayoutCase):
         brain.rebuild_index(self.root)
         self.assertEqual(self.index(), index)
 
+    def test_a_legacy_index_keeps_links_to_files_the_catalog_does_not_reach(self):
+        self.write('attachments/diagram.png', 'png')
+        self.write('data/state.json', '{}')
+        (self.root / 'raw/paper.pdf').write_bytes(b'%PDF')
+        (self.root / 'index.md').write_text(
+            '# Shared memory map\n\n- [[attachments/diagram.png|Architecture]]\n- [[data/state.json]]\n'
+            '- [[raw/paper.pdf|paper]]\n- [[AGENTS]]\n')
+        brain.rebuild_index(self.root)
+        kept = self.index().split('## Hand-written', 1)[1]
+        self.assertIn('- [[attachments/diagram.png|Architecture]]', kept)
+        self.assertIn('- [[data/state.json]]', kept)
+        self.assertNotIn('raw/paper.pdf', kept)  # The catalog lists raw sources itself.
+        self.assertNotIn('[[AGENTS]]', kept)
+        self.assert_valid()
+
     def test_index_command_rebuilds_the_catalog(self):
         self.write('wiki/topics/manual.md', META + '# Manual page\n\nWritten by hand.\n')
         self.assertIn('wiki/topics/manual.md: unreachable from index.md', check(self.root)[0])

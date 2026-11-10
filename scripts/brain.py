@@ -1080,9 +1080,16 @@ def index_catalog(root, overlay):
 
 def rescued(root, old, catalog, overlay):
     """The lines of an index.md written before the catalog existed that would be lost: everything except its title and
-    the plain link items whose note the catalog reaches anyway (directly or through other notes)."""
-    lost = {e.split(': unreachable from index.md')[0] for e in check(root, {**overlay, 'index.md': catalog})[0]
-            if e.endswith(': unreachable from index.md')}
+    the plain link items whose target (a note or any other file) the new catalog demonstrably reaches, directly or
+    through other notes."""
+    edges = {}
+    check(root, {**overlay, 'index.md': catalog}, edges=edges)
+    reached, todo = set(), [root / 'index.md']
+    while todo:
+        node = todo.pop()
+        if node not in reached:
+            reached.add(node)
+            todo.extend(edges.get(node, ()))
     kept, titled = [], False
     for _, raw, plain in plain_lines(old):
         line = raw.rstrip('\n')
@@ -1096,7 +1103,7 @@ def rescued(root, old, catalog, overlay):
                 relative = link_relative(root, link[1].strip())
             except ValueError:
                 relative = None
-            if relative and relative not in lost and (relative in overlay or (root / relative).is_file()):
+            if relative and (root / relative).resolve() in reached:
                 continue
         if line.strip() or (kept and kept[-1]):
             kept.append(line)

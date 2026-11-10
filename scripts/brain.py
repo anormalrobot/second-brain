@@ -1061,6 +1061,36 @@ def note_summary(text):
     return line.replace('`', '') if line.count('`') % 2 else line
 
 
+def read_head(path):
+    """The first 16 KiB of a note as text, or None when it cannot be read (missing, unreadable, not a file). The
+    catalog is rebuilt by the Stop hook on every turn, so one bad file must never abort it."""
+    try:
+        with path.open(encoding='utf-8', errors='replace') as handle:
+            return handle.read(16384)
+    except OSError:
+        return None
+
+
+def ledger_pages(root):
+    """{raw path: [page paths]} from the ingest ledger, skipping entries and fields of the wrong type. A broken ledger
+    is reported by coverage and doctor, not here."""
+    try:
+        sources = load_ledger(root)['sources'].values()
+    except (ValueError, OSError, AttributeError, TypeError):
+        return {}
+    pages = {}
+    for entry in sources:
+        if not isinstance(entry, dict) or not isinstance(entry.get('paths'), list):
+            continue
+        outputs = entry.get('outputs')
+        found = [*(outputs if isinstance(outputs, (dict, list)) else ()), entry.get('output')]
+        found = [name for name in found if isinstance(name, str)]
+        for name in entry['paths']:
+            if isinstance(name, str):
+                pages.setdefault(name, []).extend(found)
+    return pages
+
+
 def index_pages(root, overlay):
     """{section: [(sort key, line)]} of the catalog: one line per curated note, plus raw source files. Session
     records, checkpoints, handoffs, and run boards are not listed: project notes, records lists, and log.md link them."""
@@ -1078,10 +1108,9 @@ def index_pages(root, overlay):
                 path = scoped(root, relative)
             except ValueError:
                 continue  # Hidden folders and notes outside the vault are not catalogued.
-            if not path.is_file():
-                continue
-            with path.open(encoding='utf-8', errors='replace') as handle:
-                text = handle.read(16384)
+            text = read_head(path) if path.is_file() else None
+            if text is None:
+                continue  # Unreadable, or gone since it was listed.
         title, summary = note_title(relative, text), FIXED_SUMMARIES.get(relative) or note_summary(text)
         line = f'- [[{link_target(root, relative)}|{title}]]' + (f' — {summary}' if summary else '')
         if '/' not in relative or relative == 'memory/profile.md':
@@ -1094,15 +1123,7 @@ def index_pages(root, overlay):
             line += f' · [[{link_target(root, records_index(relative))}|automatic records]]'
         found.setdefault(section, []).append((key, line))
     raw = root / 'raw'
-    try:
-        ledger = load_ledger(root)['sources'].values()
-    except (ValueError, OSError, AttributeError):
-        ledger = []  # A broken ledger is reported by coverage and doctor, not here.
-    pages = {}  # Raw path -> the source pages the ledger records for it.
-    for entry in ledger:
-        for name in entry.get('paths', []) if isinstance(entry, dict) else []:
-            found_pages = [*entry.get('outputs', {}), entry.get('output')]
-            pages.setdefault(name, []).extend(n for n in found_pages if isinstance(n, str))
+    pages = ledger_pages(root)  # Raw path -> the source pages the ledger records for it.
     for path in sorted(raw.rglob('*')) if raw.is_dir() else []:
         relative = path.relative_to(root).as_posix()
         if (path.is_file() and not path.is_symlink() and not UNLINKABLE.search(relative) and Path(relative).suffix
@@ -1121,13 +1142,11 @@ def raw_summary(root, relative, pages, overlay):
             path = scoped(root, name) if name.endswith('.md') and not UNLINKABLE.search(name) else None
         except ValueError:
             path = None  # A page outside the vault or in a hidden folder is never linked.
-        text = path and (overlay.get(name) or (path.read_text(encoding='utf-8', errors='replace')[:16384]
-                                               if path.is_file() else ''))
-        if text:
+        text = path and (overlay.get(name) or (read_head(path) if path.is_file() else ''))
+        if text:  # An unreadable or vanished page falls through to the next candidate.
             return f'summarized in [[{link_target(root, name)}|{note_title(name, text)}]]'
     if relative.endswith('.md'):
-        with (root / relative).open(encoding='utf-8', errors='replace') as handle:
-            summary = note_summary(handle.read(16384))
+        summary = note_summary(read_head(root / relative) or '')
         if summary:
             return summary
     return 'not ingested yet'

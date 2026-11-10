@@ -179,6 +179,75 @@ class IndexCatalogTests(LayoutCase):
         brain.finish(self.root, 'raw/talk.txt', lease['token'], ['wiki/topics/talk.md'])
         self.assertIn('- [[raw/talk.txt|talk.txt]] — summarized in [[wiki/topics/talk|Talk notes]]', self.index())
 
+    def unreadable(self, relative):
+        """chmod 000 a vault file for the rest of the test; permissions come back in cleanup."""
+        if os.geteuid() == 0:
+            self.skipTest('root reads files whatever their mode')
+        path = self.root / relative
+        path.chmod(0)
+        self.addCleanup(path.chmod, 0o644)
+
+    def test_malformed_ledger_entries_are_skipped(self):
+        self.write('raw/good.txt', 'good')
+        self.write('raw/notes.md', '# Notes\n\nFirst prose of the notes.\n')
+        brain.scan(self.root)
+        lease = brain.begin(self.root, 'raw/good.txt')
+        self.write(lease['output'], META + '# Good\n\nSummary of [[raw/good.txt|the source]].\n')
+        brain.finish(self.root, 'raw/good.txt', lease['token'])
+        ledger = brain.load_ledger(self.root)
+        ledger['sources'].update({
+            'not-a-dict': ['raw/notes.md'], 'none': None,
+            'null-paths': {'paths': None, 'outputs': {'wiki/sources/good.md': 'x'}},
+            'null-outputs': {'paths': ['raw/notes.md'], 'outputs': None, 'output': None},
+            'odd-paths': {'paths': [1, None, ['raw/notes.md'], {'a': 1}], 'outputs': {}},
+            'odd-outputs': {'paths': ['raw/notes.md'], 'outputs': 5, 'output': 7},
+            'list-outputs': {'paths': 'raw/notes.md', 'outputs': [None, 3]},
+        })
+        brain.save_json(self.root / brain.LEDGER, ledger)
+        brain.rebuild_index(self.root)
+        raw = self.index().split('## Raw sources', 1)[1].split(brain.INDEX_END, 1)[0]
+        self.assertIn('- [[raw/good.txt|good.txt]] — summarized in [[wiki/sources/good|Good]]', raw)
+        self.assertIn('- [[raw/notes|notes.md]] — First prose of the notes.', raw)
+
+    def test_an_unreadable_ledger_page_falls_back_to_the_next_candidate(self):
+        self.write('raw/notes.md', '# Notes\n\nFirst prose of the notes.\n')
+        brain.scan(self.root)
+        lease = brain.begin(self.root, 'raw/notes.md')
+        self.write(lease['output'], META + '# Notes summary\n\nSummary of [[raw/notes|the notes]].\n')
+        brain.finish(self.root, 'raw/notes.md', lease['token'])
+        self.assertIn('summarized in [[wiki/sources/notes|Notes summary]]', self.index())
+        self.unreadable(lease['output'])
+        brain.rebuild_index(self.root)
+        index = self.index()
+        raw = index.split('## Raw sources', 1)[1].split(brain.INDEX_END, 1)[0]
+        self.assertIn('- [[raw/notes|notes.md]] — First prose of the notes.', raw)
+
+    def test_a_ledger_page_deleted_after_the_existence_check_falls_back(self):
+        self.write('raw/notes.md', '# Notes\n\nFirst prose of the notes.\n')
+        brain.scan(self.root)
+        ledger = brain.load_ledger(self.root)
+        entry = next(iter(ledger['sources'].values()))
+        entry['outputs'] = {'wiki/sources/gone.md': 'x', 'wiki/topics/kept.md': 'y'}
+        brain.save_json(self.root / brain.LEDGER, ledger)
+        self.write('wiki/topics/kept.md', META + '# Kept page\n\nFrom [[raw/notes.md|the notes]].\n')
+        gone = self.root / 'wiki/sources/gone.md'
+        real = Path.is_file
+        with patch.object(Path, 'is_file', lambda self: self == gone or real(self)):
+            brain.rebuild_index(self.root)
+        raw = self.index().split('## Raw sources', 1)[1].split(brain.INDEX_END, 1)[0]
+        self.assertIn('- [[raw/notes|notes.md]] — summarized in [[wiki/topics/kept|Kept page]]', raw)
+
+    def test_unreadable_notes_and_raw_sources_do_not_abort_the_rebuild(self):
+        self.write('wiki/topics/locked.md', META + '# Locked\n\nCannot be read.\n')
+        self.write('wiki/topics/open.md', META + '# Open page\n\nReadable.\n')
+        self.write('raw/locked.md', '# Locked raw\n\nCannot be read.\n')
+        self.unreadable('wiki/topics/locked.md')
+        self.unreadable('raw/locked.md')
+        brain.rebuild_index(self.root)
+        index = self.index()
+        self.assertIn('[[wiki/topics/open|Open page]] — Readable.', index)
+        self.assertIn('- [[raw/locked|locked.md]] — not ingested yet', index)
+
     def test_index_command_rebuilds_the_catalog(self):
         self.write('wiki/topics/manual.md', META + '# Manual page\n\nWritten by hand.\n')
         self.assertIn('wiki/topics/manual.md: unreachable from index.md', check(self.root)[0])

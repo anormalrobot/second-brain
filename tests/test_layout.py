@@ -303,8 +303,21 @@ class IndexCatalogTests(LayoutCase):
 
     def test_migrate_dry_run_reads_a_non_utf8_index(self):
         self.invalid_index()
+        def vault_state():
+            return {
+                str(path.relative_to(self.root)): (
+                    path.stat().st_mtime_ns,
+                    path.read_bytes() if path.is_file() else None,
+                )
+                for path in [self.root, *self.root.rglob('*')]
+            }
+        before = vault_state()
         code, result = self.cli('run', 'migrate')
         self.assertEqual(code, 0, result)
+        self.assertTrue(result['index']['changed'])
+        self.assertGreaterEqual(result['changes'], 1)
+        self.assertFalse(result['applied'])
+        self.assertEqual(vault_state(), before)  # No writes, new files, or directory changes.
         self.assertEqual(brain.internal_files(self.root, '.brain', 'index-invalid-utf8-*.md'), [])
 
     def test_a_failed_index_backup_leaves_index_md_untouched(self):

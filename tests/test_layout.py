@@ -18,6 +18,7 @@ import memory_hooks as hooks
 import second_brain as setup
 from check_vault import check, wiki_target
 
+INDEX_TAIL = b'\n- caf\xe9 notes kept by hand\n'
 META = '---\ncreated: 2026-01-01\nupdated: 2026-01-01\nstatus: active\n---\n'
 
 
@@ -264,7 +265,7 @@ class IndexCatalogTests(LayoutCase):
 
     def invalid_index(self):
         valid = self.index()
-        raw = valid.encode() + b'\n- caf\xe9 notes kept by hand\n'
+        raw = valid.encode() + INDEX_TAIL
         (self.root / 'index.md').write_bytes(raw)
         return raw
 
@@ -332,6 +333,53 @@ class IndexCatalogTests(LayoutCase):
         with patch.object(brain, 'atomic_write', write), patch.object(brain, 'sync_dir', sync):
             brain.rebuild_index(self.root)
         self.assertEqual(events, [('write', 'backup'), ('sync', '.brain'), ('write', 'index.md')])
+
+    def test_an_index_backup_sync_error_leaves_index_md_untouched(self):
+        import errno
+        import stat
+        raw = self.invalid_index()
+        real_open, real_fsync = os.open, os.fsync
+
+        def bad_open(path, *args, **kwargs):
+            if Path(path).name == '.brain':
+                raise OSError(errno.EIO, 'I/O error')
+            return real_open(path, *args, **kwargs)
+
+        def bad_fsync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError(errno.EIO, 'I/O error')
+            return real_fsync(fd)
+        for name, fake in (('open', bad_open), ('fsync', bad_fsync)):
+            with self.subTest(name), patch.object(os, name, fake), self.assertRaisesRegex(OSError, 'I/O error'):
+                brain.rebuild_index(self.root)
+            self.assertEqual((self.root / 'index.md').read_bytes(), raw)
+
+    def test_an_unsupported_directory_fsync_is_not_an_error(self):
+        import errno
+        import stat
+        self.invalid_index()
+        real_fsync = os.fsync
+
+        def fsync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError(errno.EINVAL, 'Invalid argument')
+            return real_fsync(fd)
+        with patch.object(os, 'fsync', fsync):
+            self.assertTrue(brain.rebuild_index(self.root))
+
+    def test_migrate_counts_an_invalid_index_whose_decoded_text_is_current(self):
+        valid = self.index().encode()
+        (self.root / 'index.md').write_bytes(valid + INDEX_TAIL)
+        brain.rebuild_index(self.root)  # Current text with U+FFFD; now make the bytes invalid again.
+        (self.root / 'index.md').write_bytes(valid + INDEX_TAIL)
+        self.assertEqual(brain.index_text(self.root), brain.read_index(self.root / 'index.md')[0])
+        plan = brain.migrate(self.root)
+        self.assertTrue(plan['index']['changed'])
+        self.assertGreaterEqual(plan['changes'], 1)
+        self.assertTrue(brain.migrate(self.root, apply=True)['applied'])
+        self.assertEqual(len(brain.internal_files(self.root, '.brain', 'index-invalid-utf8-*.md')), 2)  # Setup made one.
+        self.assertEqual(brain.read_index(self.root / 'index.md')[1], None)
+        self.assertEqual(brain.migrate(self.root)['changes'], 0)
 
     def test_index_command_rebuilds_the_catalog(self):
         self.write('wiki/topics/manual.md', META + '# Manual page\n\nWritten by hand.\n')

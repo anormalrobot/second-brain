@@ -145,16 +145,20 @@ def atomic_write(path, text):
 
 
 def sync_dir(path):
-    """fsync a directory so a file just renamed into it survives power loss; a no-op where directories cannot be
-    opened (Windows)."""
+    """fsync a directory so a file just renamed into it survives power loss. Only the platform limits are skipped
+    (Windows cannot open a directory; some file systems refuse to fsync one); a real I/O error is raised, so the
+    caller does not go on to replace what the file preserves."""
     try:
         fd = os.open(path, os.O_RDONLY)
-    except OSError:
-        return
+    except (PermissionError, IsADirectoryError):
+        if os.name == 'nt':
+            return
+        raise
     try:
         os.fsync(fd)
-    except OSError:
-        pass
+    except OSError as exc:
+        if exc.errno not in (errno.EINVAL, errno.ENOTSUP, getattr(errno, 'EOPNOTSUPP', errno.ENOTSUP)):
+            raise
     finally:
         os.close(fd)
 
@@ -1901,12 +1905,13 @@ def migration_plan(root):
               'kept (not empty)' if any(decisions.iterdir()) else 'remove')
     checkpoints = old_checkpoints(root)
     overlay = {'AGENTS.md': AGENTS_TEMPLATE} if agents_state == 'refresh' else {}
-    old = read_index(root / 'index.md')[0]
+    old, invalid = read_index(root / 'index.md')
     index = index_text(root, overlay)
+    changed = index != old or invalid is not None  # Invalid bytes are recovered (backed up) even if the text matches.
     kept = len(rescued(root, old, index_catalog(root, overlay), overlay)) if not index_markers(old) else 0
-    changes = len(checkpoints) + (agents_state == 'refresh') + (folder == 'remove') + (index != old)
+    changes = len(checkpoints) + (agents_state == 'refresh') + (folder == 'remove') + changed
     return {'applied': False, 'changes': changes, 'snapshot': None,
-            'index': {'changed': index != old, 'hand_written_lines': kept}, 'checkpoints': checkpoints,
+            'index': {'changed': changed, 'hand_written_lines': kept}, 'checkpoints': checkpoints,
             'decisions_folder': folder, 'agents': agents_state}
 
 

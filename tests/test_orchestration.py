@@ -318,7 +318,7 @@ class BoardTests(OrchestrationCase):
         run = self.open_run('Ship [[x]] | `y` password=hunter2')
         self.assertRegex(run, r'^\d{4}-\d\d-\d\d-ship-x-y-password-redacted-[0-9a-f]{6}$')
         self.assertIn(f'Active run: [[{wiki_target(self.root, brain.run_note(run))}|', self.note.read_text())
-        self.assertIn(wiki_target(self.root, brain.run_note(run)), (self.root / 'index.md').read_text())
+        self.assertNotIn(wiki_target(self.root, brain.run_note(run)), (self.root / 'index.md').read_text())  # Linked from the project note.
         self.assertEqual(self.ok('add', '--title', 'Lexer')['task']['id'], 't1')
         self.assertEqual(self.ok('add', '--title', 'Parser', '--depends', 't1')['task']['id'], 't2')
         self.assertEqual(self.ok('add', '--title', 'Docs', '--id', 'docs')['task']['id'], 'docs')
@@ -326,7 +326,7 @@ class BoardTests(OrchestrationCase):
         self.ok('post', 't1', '--agent', 'alice', '--status', 'in_progress', '--note', 'Halfway.')
         evidence = 'wiki/topics/lexer.md'
         (self.root / evidence).write_text('---\ncreated: 2026-01-01\nupdated: 2026-01-01\nstatus: active\n---\n# Lexer\n')
-        brain.add_index(self.root, evidence, 'Lexer')
+        brain.rebuild_index(self.root)
         done = self.ok('post', 't1', '--agent', 'alice', '--status', 'done', '--note',
                        'Lexer done.\n```\n[[not-a-link]]\n```\ntoken=abc123', '--evidence', evidence)['task']
         self.assertEqual((done['status'], done['lease_until']), ('done', None))
@@ -395,7 +395,7 @@ class BoardTests(OrchestrationCase):
     def test_evidence_links_resolve_to_the_exact_file(self):
         dotted = 'wiki/topics/api.v2.md'
         (self.root / dotted).write_text('---\ncreated: 2026-01-01\nupdated: 2026-01-01\nstatus: active\n---\n# API v2\n')
-        brain.add_index(self.root, dotted, 'API v2')
+        brain.rebuild_index(self.root)
         (self.root / 'raw/build-log').write_text('log')
         (self.root / 'raw/report.v1.pdf').write_bytes(b'%PDF')
         self.assert_valid()

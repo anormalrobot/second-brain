@@ -1,0 +1,141 @@
+"""LLM Wiki layout: the generated index.md catalog, wiki/sources ingest, fixed checkpoints, slimmer records, and the
+one-time vault migration (disposable vaults only)."""
+from contextlib import redirect_stderr, redirect_stdout
+import io
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+import brain
+import memory_hooks as hooks
+import second_brain as setup
+from check_vault import check, wiki_target
+
+META = '---\ncreated: 2026-01-01\nupdated: 2026-01-01\nstatus: active\n---\n'
+
+
+class LayoutCase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='second-brain-layout-')
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        self.project = self.base / 'project'
+        self.project.mkdir()
+        self.config = self.base / 'config/config.json'
+        env = patch.dict(os.environ, {'SECOND_BRAIN_CONFIG': str(self.config)})
+        env.start()
+        self.addCleanup(env.stop)
+        for name in ('SECOND_BRAIN_VAULT', 'SECOND_BRAIN_AUTOMATION', 'SECOND_BRAIN_RUN'):
+            os.environ.pop(name, None)
+        self.info = setup.initialize(self.config, self.project, mode='new', path=self.base / 'vault')
+        self.root = Path(self.info['root'])
+        self.note = self.root / self.info['project']
+
+    def write(self, relative, text):
+        (self.root / relative).parent.mkdir(parents=True, exist_ok=True)
+        (self.root / relative).write_text(text)
+
+    def index(self):
+        return (self.root / 'index.md').read_text()
+
+    def handle(self, kind, session='layout-session', **extra):
+        return hooks.handle({'hook_event_name': kind, 'cwd': str(self.project), 'session_id': session, **extra},
+                            self.config)
+
+    def turn(self, prompt, response, session='layout-session', **ids):
+        self.handle('UserPromptSubmit', session, prompt=prompt, **ids)
+        self.handle('Stop', session, last_assistant_message=response, **ids)
+
+    def records(self):
+        return sorted((self.root / 'memory/sessions').glob('*-auto-*.md'))
+
+    def cli(self, *args):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = setup.main(['--config', str(self.config), '--cwd', str(self.project), *args])
+        return code, json.loads(out.getvalue() or err.getvalue())
+
+    def assert_valid(self):
+        self.assertEqual(check(self.root)[0], [])
+
+
+class IndexCatalogTests(LayoutCase):
+    def test_init_writes_a_catalog_with_sections_and_summaries(self):
+        index = self.index()
+        heads = re.findall(r'^## (.+)$', index, re.M)
+        self.assertEqual(heads, ['Start here', 'Projects', 'Wiki topics', 'Wiki sources'])
+        start = index.split('## Start here', 1)[1].split('## Projects', 1)[0]
+        order = [re.search(r'\[\[([^|\]]+)', line)[1] for line in start.splitlines() if line.startswith('- ')]
+        self.assertEqual(order[:3], ['AGENTS', 'memory/profile', 'log'])
+        self.assertIn('- [[AGENTS|Shared memory instructions]] — Keep maintained notes in English', index)
+        self.assertIn(f'[[{wiki_target(self.root, self.info["project"])}|Project — ', index)
+        self.assert_valid()
+
+    def test_pages_get_one_line_with_summary_and_records_are_not_listed(self):
+        self.write('wiki/topics/sqlite.md', META + '# SQLite notes\n\n## Why\n\nSQLite keeps the catalogue offline. '
+                   + 'More words here. ' * 20 + '\n')
+        self.write('wiki/sources/paper.md', META.replace('status: active', 'status: active\nsummary: A paper on sync')
+                   + '# Paper\n\nFirst line.\n')
+        self.write('memory/decisions/old.md', META + '# Old decision\n\nKept from an older vault.\n')
+        (self.root / 'raw/paper.pdf').write_bytes(b'%PDF')
+        self.turn('Remember this', 'Saved.')
+        brain.checkpoint(self.root, self.info['project'], 'Did it.', 'Next.', ['memory/profile.md'])
+        index = self.index()
+        line = next(l for l in index.splitlines() if 'wiki/topics/sqlite' in l)
+        self.assertTrue(line.startswith('- [[wiki/topics/sqlite|SQLite notes]] — SQLite keeps the catalogue offline.'))
+        self.assertLessEqual(len(line.split(' — ', 1)[1]), 160)
+        self.assertIn('- [[wiki/sources/paper|Paper]] — A paper on sync', index)
+        self.assertIn('[[raw/paper.pdf|paper.pdf]]', index.split('## Raw sources', 1)[1])
+        self.assertIn('[[memory/decisions/old|Old decision]]', index.split('## Other notes', 1)[1])
+        project_line = next(l for l in index.splitlines() if wiki_target(self.root, self.info['project']) in l)
+        self.assertIn(wiki_target(self.root, hooks.records_index(self.info['project'])), project_line)
+        self.assertNotIn('memory/sessions/20', index)  # Records and checkpoints are reached via the project and log.
+        self.assert_valid()
+
+    def test_rebuild_is_idempotent_and_keeps_hand_written_lines(self):
+        before = self.index()
+        brain.rebuild_index(self.root)
+        self.assertEqual(self.index(), before)
+        (self.root / 'index.md').write_text(before + '\n## Hand-written\n\n- [[memory/profile|My own link]]\n')
+        self.write('wiki/topics/new.md', META + '# New page\n\nA new page.\n')
+        self.turn('hello', 'Hi.')  # Any runtime write rebuilds the catalog.
+        index = self.index()
+        self.assertIn('[[wiki/topics/new|New page]] — A new page.', index)
+        self.assertTrue(index.endswith('## Hand-written\n\n- [[memory/profile|My own link]]\n'))
+        self.assert_valid()
+
+    def test_a_legacy_index_keeps_only_lines_that_would_otherwise_be_lost(self):
+        self.write('wiki/topics/kept.md', META + '# Kept\n\nCatalogued.\n')
+        self.write('memory/sessions/manual-note.md', META + '# Manual\n\nOnly the old index links here.\n')
+        legacy = ('# Shared memory map\n\n- [[AGENTS]]\n\n- [[wiki/topics/kept|Kept]]\n\n'
+                  '- [[memory/sessions/manual-note|Manual]]\n\nA hand-written remark.\n\n'
+                  f'- [[{self.info["project"][:-3]}|project]]\n')
+        (self.root / 'index.md').write_text(legacy)
+        brain.rebuild_index(self.root)
+        index = self.index()
+        kept = index.split('## Hand-written', 1)[1]
+        self.assertEqual(kept.strip().splitlines()[2:], ['- [[memory/sessions/manual-note|Manual]]', '',
+                                                     'A hand-written remark.'])
+        self.assertIn('[[wiki/topics/kept|Kept]] — Catalogued.', index)
+        self.assert_valid()
+        brain.rebuild_index(self.root)
+        self.assertEqual(self.index(), index)
+
+    def test_index_command_rebuilds_the_catalog(self):
+        self.write('wiki/topics/manual.md', META + '# Manual page\n\nWritten by hand.\n')
+        self.assertIn('wiki/topics/manual.md: unreachable from index.md', check(self.root)[0])
+        code, result = self.cli('run', 'index')
+        self.assertEqual(code, 0, result)
+        self.assertTrue(result['changed'])
+        self.assertIn('[[wiki/topics/manual|Manual page]]', self.index())
+        self.assert_valid()
+
+
+if __name__ == '__main__':
+    unittest.main()

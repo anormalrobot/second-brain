@@ -13,12 +13,12 @@ import uuid
 
 try:
     from . import brain, records, runs
-    from .check_vault import check, link_prefix, marker_path, wiki_target
+    from .check_vault import check, link_prefix, marker_path
 except ImportError:
     import brain
     import records
     import runs
-    from check_vault import check, link_prefix, marker_path, wiki_target
+    from check_vault import check, link_prefix, marker_path
 
 MARKER = '.second-brain.json'
 SOURCE = Path(__file__).resolve().parents[1]
@@ -72,8 +72,6 @@ def skeleton(root, prefix=''):
     stamp = brain.day()
     meta = f'---\ncreated: {stamp}\nupdated: {stamp}\nstatus: active\n---\n'
     brain.save_json(root / MARKER, {'schema_version': 1, 'id': str(uuid.uuid4()), 'link_prefix': prefix})
-    def ref(name):
-        return '[[' + wiki_target(root, name) + ']]'
     files = {
         'AGENTS.md': '''# Shared memory instructions
 
@@ -102,8 +100,6 @@ Run `second-brain run doctor` and `coverage` after changes. A processing receipt
 checks structure and source links, not factual truth. Never invent missing facts.
 ''',
         'CLAUDE.md': '@AGENTS.md\n',
-        'index.md': '# Shared memory map\n\n' + '\n'.join('- ' + ref(n) for n in
-                    ('AGENTS', 'CLAUDE', 'README', 'log', 'memory/profile')) + '\n',
         'log.md': f'# Change log\n\n## {stamp} — Created a clean shared brain\n',
         'memory/profile.md': meta + '# Profile\n\nNo personal preferences have been recorded yet.\n\n'
                              'Source: installation defaults; these are not user facts.\n',
@@ -125,6 +121,7 @@ conversation records in initialized projects. No sync service is installed.
     for name in ('raw', 'wiki/sources', 'wiki/topics', 'memory/projects', 'memory/sessions', 'memory/decisions', 'inbox'):
         (root / name).mkdir(parents=True, exist_ok=True)
     brain.save_json(root / brain.LEDGER, {'schema_version': 1, 'sources': {}})
+    brain.rebuild_index(root)
     if not prefix:
         brain.save_json(root / '.obsidian/app.json', {'useMarkdownLinks': False, 'newLinkFormat': 'absolute'})
 
@@ -362,7 +359,7 @@ def _bind(data, path, vault=None, project=None, note=None, replace=False):
                 f'# Project — {target.stem}\n\n'
                 'Source: explicit local project binding during setup. This is a navigation record.\n'
                 + brain.section_stubs(brain.PROJECT_SECTIONS))
-        brain.add_index(root, relative, target.stem)
+        brain.rebuild_index(root)
     data['projects'][str(path)] = {**desired, 'automatic_memory': old.get('automatic_memory', True) if old else True}
 
 

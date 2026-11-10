@@ -46,7 +46,7 @@ class WikiCase(unittest.TestCase):
         (self.root / relative).parent.mkdir(parents=True, exist_ok=True)
         (self.root / relative).write_text(text)
         if index:
-            brain.add_index(self.root, relative, Path(relative).stem)
+            brain.rebuild_index(self.root)
 
     def text_file(self, text):
         path = self.base / ('answer-' + str(len(list(self.base.glob('answer-*')))) + '.md')

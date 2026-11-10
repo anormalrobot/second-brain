@@ -425,9 +425,10 @@ def linked_files(root, text, skip=(), vault=None):
     return found, outside
 
 
-def note_issues(root, relatives):
-    """Structural issues of these notes plus global ones; unrelated broken notes elsewhere do not block."""
-    issues, notes, links = check(root)
+def note_issues(root, relatives, overlay=None):
+    """Structural issues of these notes plus global ones; unrelated broken notes elsewhere do not block. overlay holds
+    files checked as if written (the rebuilt index.md)."""
+    issues, notes, links = check(root, overlay)
     names = {str(scoped(root, r).relative_to(root)) for r in relatives}
     return [i for i in issues if not re.match(r'.+?\.md:', i) or re.match(r'(.+?\.md):', i)[1] in names], notes, links
 
@@ -863,7 +864,8 @@ def compile_done(root, project, token, updated=(), skipped=(), when=None):
         uncited = sorted((set(records) | set(boards)) - cited - set(skipped))
         if uncited:
             raise ValueError('Cite each batch record in an updated note or --skip it: ' + ', '.join(uncited))
-        issues = note_issues(root, updated)[0]
+        index = index_text(root)  # A page the agent added is catalogued, so it is reachable.
+        issues = note_issues(root, updated, {'index.md': index})[0]
         if issues:
             raise ValueError('Structural validation failed: ' + '; '.join(issues[:5]))
         # Prepare every change first, so a failed check leaves records and notes untouched.
@@ -908,6 +910,7 @@ def compile_done(root, project, token, updated=(), skipped=(), when=None):
         writes.append((project_path, stamp(note, when)))
         for path, text in writes:
             atomic_write(path, text)
+        rebuild_index(root)
         compiled = [name for name in [*records, *boards] if name in cited]
         if session and not records:
             compiled = []
@@ -920,20 +923,171 @@ def compile_done(root, project, token, updated=(), skipped=(), when=None):
             'pending_total': len(pending_records(root, project)) + len(uncompiled_runs(root, project))}
 
 
-def indexed(root, text, relative, label):
-    """index.md text that links relative, unchanged when it already does."""
-    target = link_target(root, relative)  # Resolves to this exact file, even for a dotted name such as api.v2.md.
-    if target in link_targets(text):  # A link quoted in a code example does not count.
-        return text
-    return text.rstrip() + '\n\n- [[' + target + '|' + label + ']]\n'
+INDEX_START = '<!-- second-brain index: generated from the notes; edit only below the end marker -->'
+INDEX_END = '<!-- second-brain index end: lines below this marker are hand-written and kept -->'
+INDEX_SECTIONS = ('Start here', 'Projects', 'Wiki topics', 'Wiki sources', 'Raw sources', 'Other notes')
+START_HERE = ('AGENTS.md', 'memory/profile.md', 'log.md')
+FIXED_SUMMARIES = {'log.md': 'Chronological, append-only history of changes to this vault.',
+                   'CLAUDE.md': 'Imports AGENTS.md for Claude Code.'}
+INDEX_FOLDERS = (('memory/projects/', 'Projects'), ('wiki/topics/', 'Wiki topics'), ('wiki/sources/', 'Wiki sources'))
+SUMMARY_LIMIT = 160
+# Placeholder lines that say nothing about a page; navigation lines (POINTERS) are skipped as well.
+NOT_SUMMARY = ('Source: explicit local project binding during setup.', 'None recorded yet.', 'Project:',
+               'Last compiled:', 'Automatic records:', '<!--', '|', '---', '@')
+UNLINKABLE = re.compile(r'[\[\]|#^\x00-\x1f]')  # Names a wikilink cannot address exactly (see evidence_link).
 
 
-def add_index(root, relative, label):
+def records_index(project):
+    """One per-project list of automatic records keeps index.md and log.md concise."""
+    # Mirroring the project path keeps nested notes (a/b.md vs a--b.md) from sharing a list.
+    return 'memory/sessions/records/' + project[len('memory/projects/'):]
+
+
+def note_title(relative, text):
+    """A note's first # heading outside code, made safe as a wikilink alias; else its file name."""
+    for offset, raw, plain in plain_lines(text):
+        if offset >= body_start(text) and raw.startswith('# ') and plain.startswith('# '):
+            title = ' '.join(UNLINKABLE.sub(' ', raw[2:]).split())
+            if title:
+                return title
+            break
+    return Path(relative).stem
+
+
+def note_summary(text):
+    """frontmatter summary:, else the first prose paragraph after the # heading (or one list item), as plain one-line
+    text of at most SUMMARY_LIMIT characters. Headings, code, navigation lines, and placeholders are skipped."""
+    line = frontmatter(text).get('summary', '').strip()
+    item = re.compile(r'(?:[-*+>]|\d+[.)])\s+')
+    if not line:
+        parts = []
+        for offset, raw, plain in plain_lines(text):
+            raw, plain = raw.strip(), plain.strip()
+            if offset < body_start(text) or (not parts and (not plain or raw.startswith(('#',) + POINTERS + NOT_SUMMARY))):
+                continue
+            if parts and (not plain or raw.startswith(('#', '|')) or item.match(raw)):
+                break
+            parts.append(raw[item.match(raw).end():] if not parts and item.match(raw) else raw)
+            if item.match(raw) or len(' '.join(parts)) > SUMMARY_LIMIT:
+                break
+        line = ' '.join(parts)
+    line = re.sub(r'\[\[([^\]|]*)\|([^\]]*)\]\]', r'\2', line)
+    line = re.sub(r'\[\[([^\]]*)\]\]', r'\1', line)
+    line = re.sub(r'!?\[([^\]]*)\]\([^)]*\)', r'\1', line)
+    line = ' '.join(line.replace('**', '').replace('[[', '').replace(']]', '').split())
+    if len(line) > SUMMARY_LIMIT:
+        line = line[:SUMMARY_LIMIT - 1].rsplit(' ', 1)[0].rstrip(' ,;:') + '…'
+    return line.replace('`', '') if line.count('`') % 2 else line
+
+
+def index_pages(root, overlay):
+    """{section: [(sort key, line)]} of the catalog: one line per curated note, plus raw source files. Session
+    records, checkpoints, handoffs, and run boards are not listed: project notes, records lists, and log.md link them."""
+    names = set(overlay) | {p.relative_to(root).as_posix() for p in root.glob('*.md')}
+    for folder in ('memory', 'wiki'):
+        names |= {p.relative_to(root).as_posix() for p in (root / folder).rglob('*.md')}
+    found = {}
+    for relative in sorted(names):
+        if relative == 'index.md' or relative.startswith(('memory/sessions/', 'memory/runs/')) or UNLINKABLE.search(relative):
+            continue
+        if relative in overlay:
+            text = overlay[relative]
+        else:
+            try:
+                path = scoped(root, relative)
+            except ValueError:
+                continue  # Hidden folders and notes outside the vault are not catalogued.
+            if not path.is_file():
+                continue
+            with path.open(encoding='utf-8', errors='replace') as handle:
+                text = handle.read(16384)
+        title, summary = note_title(relative, text), FIXED_SUMMARIES.get(relative) or note_summary(text)
+        line = f'- [[{link_target(root, relative)}|{title}]]' + (f' — {summary}' if summary else '')
+        if '/' not in relative or relative == 'memory/profile.md':
+            section = 'Start here'
+            key = (START_HERE.index(relative) if relative in START_HERE else len(START_HERE), relative)
+        else:
+            section = next((name for folder, name in INDEX_FOLDERS if relative.startswith(folder)), 'Other notes')
+            key = (title.casefold(), relative)
+        if section == 'Projects' and (root / records_index(relative)).is_file():
+            line += f' · [[{link_target(root, records_index(relative))}|automatic records]]'
+        found.setdefault(section, []).append((key, line))
+    raw = root / 'raw'
+    for path in sorted(raw.rglob('*')) if raw.is_dir() else []:
+        relative = path.relative_to(root).as_posix()
+        if (path.is_file() and not path.is_symlink() and not UNLINKABLE.search(relative) and Path(relative).suffix
+                and not any(part.startswith('.') for part in path.relative_to(raw).parts)):
+            found.setdefault('Raw sources', []).append(((relative,), f'- [[{link_target(root, relative)}|{path.name}]]'))
+    return found
+
+
+def index_catalog(root, overlay):
+    found = index_pages(root, overlay)
+    out = (f'# Shared memory map\n\n{INDEX_START}\n\nGenerated catalog of this vault: one line per page. log.md is the '
+           'chronological history; session records, checkpoints, and handoffs are linked from project notes and the log.\n')
+    for section in INDEX_SECTIONS:
+        if section in found or section in INDEX_SECTIONS[:4]:
+            lines = [line for _, line in sorted(found.get(section, []))] or ['None yet.']
+            out += f'\n## {section}\n\n' + '\n'.join(lines) + '\n'
+    return out + f'\n{INDEX_END}\n'
+
+
+def rescued(root, old, catalog, overlay):
+    """Lines of an index.md written before the catalog existed that would be lost: everything except its title and
+    the plain link items whose note the catalog reaches anyway (directly or through other notes)."""
+    lost = {e.split(': unreachable from index.md')[0] for e in check(root, {**overlay, 'index.md': catalog})[0]
+            if e.endswith(': unreachable from index.md')}
+    kept, titled = [], False
+    for _, raw, plain in plain_lines(old):
+        line = raw.rstrip('\n')
+        if not titled and line.strip():
+            titled = True
+            if line.startswith('# ') and plain.startswith('# '):
+                continue
+        link = re.fullmatch(r'- \[\[([^\[\]|]+)(?:\|[^\[\]]*)?\]\]', line.strip()) if plain.strip() == line.strip() else None
+        if link:
+            try:
+                relative = link_relative(root, link[1].strip())
+            except ValueError:
+                relative = None
+            if relative and relative not in lost and (relative in overlay or (root / relative).is_file()):
+                continue
+        if line.strip() or (kept and kept[-1]):
+            kept.append(line)
+    text = '\n'.join(kept).strip('\n')
+    return '## Hand-written\n\nKept from the index.md written before the generated catalog.\n\n' + text + '\n' if text else ''
+
+
+def index_text(root, overlay=None):
+    """index.md as a generated content catalog (deterministic for the same files) followed by the hand-written lines
+    kept below the end marker. An index.md without that marker predates the catalog: its lines that the catalog would
+    lose are moved below the marker (rescued), so converting never drops a link that something still needs."""
+    root = Path(root).resolve()
+    overlay = dict(overlay or {})
     path = root / 'index.md'
-    text = path.read_text(encoding='utf-8')
-    updated = indexed(root, text, relative, label)
-    if updated != text:
-        atomic_write(path, updated)
+    old = overlay.pop('index.md', None)
+    if old is None:
+        old = path.read_text(encoding='utf-8') if path.is_file() else ''
+    catalog = index_catalog(root, overlay)
+    if INDEX_END in old:
+        head, tail = old.split(INDEX_END, 1)
+        extra = head.split(INDEX_START, 1)[0] if INDEX_START in head else ''
+        extra = '\n'.join(l for l in extra.splitlines() if l.strip() and not l.startswith('# '))
+        kept = (extra + '\n\n' if extra else '') + tail.strip('\n')
+    else:
+        kept = rescued(root, old, catalog, overlay)
+    return catalog + ('\n' + kept.strip('\n') + '\n' if kept.strip() else '')
+
+
+def rebuild_index(root, overlay=None):
+    """Write the generated index.md when it changed; the caller holds the writer lock. True when it was written."""
+    root = Path(root).resolve()
+    text = index_text(root, overlay)
+    path = root / 'index.md'
+    if path.is_file() and path.read_text(encoding='utf-8') == text:
+        return False
+    atomic_write(path, text)
+    return True
 
 
 def logged(root, message, when):
@@ -1045,7 +1199,7 @@ def file_answer(root, title, text, sources=(), slug=None, update=False, expected
             out = set_fields(old, updated=when).rstrip('\n') + f'\n\n## Update — {when}\n\n{body}\n'
             out += '\n## Sources\n\n' + lines if lines and not spans else ''
             message = f'Updated answer [[{link_target(root, relative)}|{slug}]]'
-        index = indexed(root, (root / 'index.md').read_text(encoding='utf-8'), relative, title or slug)
+        index = index_text(root, {relative: out})
         log = logged(root, message, when)
         overlay = {relative: out, 'index.md': index, 'log.md': log}
         after = check(root, overlay)[0]
@@ -1113,7 +1267,7 @@ Project: [[{link_target(root, project)}|Project state]].
             text = drop_body_lines(text, 'Latest checkpoint:')
         text = stamp(set_body_line(text, field + ':', pointer), when)
         atomic_write(project_path, text.rstrip() + '\n')
-        add_index(root, relative, f'{project_path.stem} {checkpoint_id}')
+        rebuild_index(root)
         log_path = root / 'log.md'
         log_text = log_path.read_text(encoding='utf-8') if log_path.exists() else ''
         if '[[' + link_target(root, relative) + '|' not in log_text:
@@ -1465,7 +1619,7 @@ def consolidate(root, source, target, text, evidence, expected_sha, when=None):
             refs.append(evidence_link(root, scoped(root, name).relative_to(root).as_posix()))
         updated = stamp(previous, when).rstrip() + f'\n\n{marker}\n## Consolidated finding — {when}\n\n{text.strip()}\n\nEvidence: ' + ', '.join(refs) + '.\n'
         atomic_write(dst, updated)
-        add_index(root, target, dst.stem)
+        rebuild_index(root)
         append_log(root, f'Consolidated {source} into {target}; operation {operation}', when)
     return {'state': 'applied', 'operation': operation, 'target_sha256': digest(dst.read_bytes())}
 
@@ -1569,6 +1723,7 @@ HELP = {
     'doctor': 'Structural check plus review candidates (pending_compile, content findings, spool)',
     'consolidate': 'Append a reviewed finding from a session note to a canonical note',
     'file-answer': 'File a reusable answer as wiki/topics/SLUG.md citing --source files (--update appends)',
+    'index': 'Rebuild index.md, the generated catalog of pages (hand-written lines below its end marker are kept)',
     'snapshot': 'Write a zip snapshot of the vault',
     'restore': 'Restore a snapshot into a new directory',
 }
@@ -1595,6 +1750,7 @@ def main(argv=None, prog=None):
     p = add('doctor'); p.add_argument('--as-of'); p.add_argument('--stale-days', type=int, default=90)
     p = add('consolidate'); p.add_argument('--source', required=True); p.add_argument('--target', required=True); p.add_argument('--text-file', type=Path, required=True); p.add_argument('--evidence', action='append', required=True); p.add_argument('--expected-sha', required=True); p.add_argument('--date')
     p = add('file-answer'); p.add_argument('--title'); p.add_argument('--text-file', type=Path, required=True); p.add_argument('--source', action='append', default=[], metavar='PATH'); p.add_argument('--slug'); p.add_argument('--update', action='store_true'); p.add_argument('--expected-sha'); p.add_argument('--date')
+    add('index')
     p = add('snapshot'); p.add_argument('--output', type=Path, required=True)
     p = add('restore'); p.add_argument('archive', type=Path); p.add_argument('--destination', type=Path, required=True)
     args = parser.parse_args(argv)
@@ -1624,6 +1780,9 @@ def main(argv=None, prog=None):
             with args.text_file.open(encoding='utf-8') as handle:
                 text = handle.read(ANSWER_LIMIT + 1)  # Enough to refuse an oversized answer without reading it all.
             result = file_answer(root, args.title, text, args.source, args.slug, args.update, args.expected_sha, args.date)
+        elif args.command == 'index':
+            with writer(root):
+                result = {'changed': rebuild_index(root), 'path': 'index.md'}
         elif args.command == 'snapshot': result = snapshot(root, args.output)
         else: result = restore(args.archive, args.destination)
         print(json.dumps(result, ensure_ascii=False, indent=2))

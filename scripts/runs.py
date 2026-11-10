@@ -282,7 +282,6 @@ def open_run(root, project, title, goal=''):
         log(data, 'board', 'opened the run: ' + title)
         save(root, data)
         brain.save_json(pointer(root, project), {'run': run, 'project': project})
-        brain.add_index(root, brain.run_note(run), 'Run: ' + link_label(title, run))
         set_run_pointer(root, project, f'Active run: {run_link(root, data)}.')
     return {'run': run, 'path': brain.run_note(run), 'status': 'active'}
 

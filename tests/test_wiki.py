@@ -46,7 +46,7 @@ class WikiCase(unittest.TestCase):
         (self.root / relative).parent.mkdir(parents=True, exist_ok=True)
         (self.root / relative).write_text(text)
         if index:
-            brain.add_index(self.root, relative, Path(relative).stem)
+            brain.rebuild_index(self.root)
 
     def text_file(self, text):
         path = self.base / ('answer-' + str(len(list(self.base.glob('answer-*')))) + '.md')
@@ -295,18 +295,18 @@ class DoctorContentTests(WikiCase):
         runs.close_run(self.root, second, 'Done.')
         self.write('wiki/topics/claim.md', META + '# Claim\n\nTrust me. `[[raw/paper.pdf]]` in code is no citation.\n',
                    index=True)
-        self.write('memory/decisions/choice.md', META + f'# Choice\n\nProject: [[{project[:-3]}|Project state]].\n\n'
+        self.write('wiki/topics/choice.md', META + f'# Choice\n\nProject: [[{project[:-3]}|Project state]].\n\n'
                    f'Automatic records: [[{hooks.records_index(project)[:-3]}|All automatic records]].\n\n'
                    'See [[index]] and [[log]].\n', index=True)  # Navigation links are not evidence.
         self.write('wiki/topics/lonely.md', META + '# Lonely\n\nFrom [[raw/notes.md|notes]].\n', index=True)
         self.write('wiki/topics/linked.md', META + '# Linked\n\nSee [[wiki/topics/lonely]] [[raw/paper.pdf]].\n', index=True)
         self.write('wiki/topics/hub.md', META + '# Hub\n\n[[wiki/topics/linked]] [[wiki/topics/claim]] '
-                   '[[memory/decisions/choice]] [[wiki/topics/sqlite]].\n', index=True)
+                   '[[wiki/topics/choice]] [[wiki/topics/sqlite]].\n', index=True)
         brain.append_log(self.root, 'Touched [[wiki/topics/hub|hub]]', '2026-01-02')  # log.md links are not inbound.
         findings = self.kinds()
         got = {(f['kind'], tuple(f['paths'])) for f in findings if f['kind'] != 'pending_compile'}
         self.assertEqual(got, {('empty_project_note', (project,)), ('unsupported_note', ('wiki/topics/claim.md',)),
-                               ('unsupported_note', ('memory/decisions/choice.md',)),
+                               ('unsupported_note', ('wiki/topics/choice.md',)),
                                ('orphan_note', ('wiki/topics/hub.md',))})
         pending = {f['project']: f for f in findings if f['kind'] == 'pending_compile'}
         self.assertEqual(set(pending), {project, second})
@@ -322,7 +322,7 @@ class DoctorContentTests(WikiCase):
         note = self.root / project
         note.write_text(note.read_text().replace('## Status\n\nNone recorded yet.', '## Status\n\nCache layout saved.'))
         self.write('wiki/topics/claim.md', META + f'# Claim\n\nSee [[{hooks.records_index(project)[:-3]}]].\n')
-        self.write('memory/decisions/choice.md', META + '# Choice\n\nFrom [[memory/profile]].\n')
+        self.write('wiki/topics/choice.md', META + '# Choice\n\nFrom [[memory/profile]].\n')
         note.write_text(note.read_text() + '\nTopics: [[wiki/topics/hub]].\n')
         self.assertEqual({f['kind'] for f in self.kinds()}, {'pending_compile'})
         with redirect_stderr(io.StringIO()), patch('sys.stdout', new_callable=io.StringIO) as out:

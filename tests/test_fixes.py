@@ -412,7 +412,7 @@ class RecordsIndexTests(VaultCase):
             self.assertNotIn(record.stem, index)
             self.assertNotIn(record.stem, log)
         self.assertEqual(index.count(wiki_target(self.root, relative)), 1)
-        self.assertEqual(len(index.splitlines()) - len(index_before.splitlines()), 2)
+        self.assertEqual(len(index.splitlines()), len(index_before.splitlines()))  # The project line links the list.
         self.assertLessEqual(log.count('\n## ') - log_before.count('\n## '), 1)
         project = (self.root / self.info['project']).read_text()
         self.assertEqual(project.count(wiki_target(self.root, relative)), 1)
@@ -423,9 +423,8 @@ class RecordsIndexTests(VaultCase):
     def test_existing_index_entries_are_preserved(self):
         index = self.root / 'index.md'
         index.write_text(index.read_text() + '\n- [[memory/profile|User kept line]]\n')
-        before = index.read_text()
         self.turn('Task', 'Result')
-        self.assertTrue(index.read_text().startswith(before.rstrip()))
+        self.assertTrue(index.read_text().endswith(brain.INDEX_END + '\n\n- [[memory/profile|User kept line]]\n'))
 
     def test_records_index_does_not_leak_into_other_projects(self):
         other = self.base / 'other'
@@ -640,9 +639,10 @@ class GuardTests(VaultCase):
         (self.root / 'raw/article.txt').write_text('Original source.\n')
         brain.scan(self.root)
         lease = brain.begin(self.root, 'raw/article.txt')
-        (self.root / 'wiki/sources/orphan.md').write_text(meta('# Orphan\n\n[[raw/article.txt]]\n'))
+        # wiki/ pages are catalogued in index.md; a note outside the catalog must still be linked from somewhere.
+        (self.root / 'memory/sessions/orphan.md').write_text(meta('# Orphan\n\n[[raw/article.txt]]\n'))
         with self.assertRaisesRegex(ValueError, 'orphan.md: unreachable'):
-            brain.finish(self.root, 'raw/article.txt', lease['token'], ['wiki/sources/orphan.md'])
+            brain.finish(self.root, 'raw/article.txt', lease['token'], ['memory/sessions/orphan.md'])
 
 
 class StaleAliasTests(VaultCase):

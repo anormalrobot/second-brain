@@ -91,7 +91,8 @@ class FinalCase(unittest.TestCase):
         self.note.write_text(head + '# Project' + rest.replace('\n## Goal', '\nNavigation line format:\n\n' + EXAMPLE + '\n## Goal', 1))
         (self.root / 'memory/sessions/example-note.md').write_text(
             '---\ncreated: 2026-01-01\nupdated: 2026-01-01\nstatus: active\n---\n# Example\n\nEXAMPLE_ONLY_TEXT\n')
-        brain.add_index(self.root, 'memory/sessions/example-note.md', 'example')
+        with (self.root / 'index.md').open('a') as index:  # Below the catalog's end marker: hand-written, kept.
+            index.write('- [[memory/sessions/example-note|example]]\n')
 
 
     def queued_stop(self, session, prompt, response):
@@ -176,7 +177,7 @@ class CodeAwareNavigationTests(FinalCase):
         topic = self.root / 'wiki/topics/format.md'
         example = '```yaml\nupdated: 1999-01-01\n```\n'
         topic.write_text('---\ncreated: 2026-01-01\nstatus: active\n---\n# Format\n\n' + example)
-        brain.add_index(self.root, 'wiki/topics/format.md', 'format')
+        brain.rebuild_index(self.root)
         self.turn('which format', 'YAML front matter.')
         source = self.records()[0].relative_to(self.root).as_posix()
         text_file = self.base / 'finding.md'
@@ -240,7 +241,7 @@ class SyntheticPromptTests(FinalCase):
         text = record.read_text()
         self.assertEqual(text.count('### System notification'), 2)
         self.assertEqual(text.count('### Request'), 1)
-        self.assertIn('<agent-message from=', text)
+        self.assertIn('[agent-message] from worker-1: lint results passed', text)
 
 
 class DottedProjectNoteTests(FinalCase):
@@ -527,7 +528,8 @@ class FixRound2Tests(FinalCase):
         (self.root / legacy).write_text(
             '---\ncreated: 2026-01-02\nupdated: 2026-01-02\nstatus: recorded\n---\n# Automatic conversation record\n\n'
             'Project: [[memory/projects/my.app|Project state]].\n')
-        brain.add_index(self.root, legacy, 'Automatic conversation record')
+        with (self.root / 'index.md').open('a') as index:
+            index.write(f'- [[{legacy[:-3]}|Automatic conversation record]]\n')
         self.assert_valid()
         edges = {}
         check(self.root, edges=edges)
@@ -543,7 +545,7 @@ class FixRound2Tests(FinalCase):
         self.assert_valid()
         (self.root / 'memory/projects/missing.md.md').write_text('---\ncreated: 2026-01-01\nupdated: 2026-01-01\n'
                                                                 'status: active\n---\n# Doubled\n')
-        brain.add_index(self.root, 'memory/projects/missing.md.md', 'doubled')
+        brain.rebuild_index(self.root)
         text = (self.root / legacy).read_text() + 'See [[memory/projects/missing]].\n'
         (self.root / legacy).write_text(text)
         self.assertEqual(check(self.root)[0], [legacy + ':10: missing target: memory/projects/missing'])

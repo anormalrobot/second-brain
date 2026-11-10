@@ -310,10 +310,7 @@ def remember_record(state_path, relative, keys=None, marks=None):
         brain.save_json(state_path, state)
 
 
-def records_index(project):
-    """One per-project list of automatic records keeps index.md and log.md concise."""
-    # Mirroring the project path keeps nested notes (a/b.md vs a--b.md) from sharing a list.
-    return 'memory/sessions/records/' + project[len('memory/projects/'):]
+records_index = brain.records_index
 
 
 def add_record(root, project, relative, when, label):
@@ -339,4 +336,4 @@ def add_record(root, project, relative, when, label):
     note = project_path.read_text(encoding='utf-8')
     if not brain.body_lines(note, 'Automatic records:'):  # A quoted example in code is not the link.
         brain.atomic_write(project_path, note.rstrip() + f'\n\nAutomatic records: [[{brain.link_target(root, index)}|All automatic records]].\n')
-    brain.add_index(root, index, Path(project).stem + ' automatic records')
+    brain.rebuild_index(root)  # The project's catalog line links the records list.

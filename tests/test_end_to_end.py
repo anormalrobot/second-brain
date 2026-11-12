@@ -242,7 +242,7 @@ class LegacyVaultTests(PackagedCase):
                          [(names[0], 1, 1), (names[1], 1, 1)])
         text = self.note.read_text()
         self.assertTrue(text.startswith(original))  # The legacy note keeps its text; missing sections are appended.
-        self.assertEqual(re.findall(r'^## (.+)$', text, re.M), ['Goal', 'Decisions', 'Status', 'Open questions', 'Next steps'])
+        self.assertEqual(re.findall(r'^## (.+)$', text, re.M), ['Goal', 'Preferences', 'Decisions', 'Status', 'Open questions', 'Next steps'])
         self.fill('Decisions', 'Legacy work was recorded. Evidence: ' + ', '.join(r['link'] for r in listing['records']) + '.')
         done = self.cli('compile', '--done', listing['token'], '--updated', self.project_note, skill='compile')
         self.assertEqual((sorted(done['compiled']), done['pending_total']), (names, 0))

@@ -555,6 +555,10 @@ def run_operation(config, cwd, vault, arguments):
         return runs.main(['--root', info['root'], '--project', info['project'], *extra[1:]])
     if extra[0] in ('brief', 'checkpoint', 'compile'):
         extra += ['--project', info['project'] or '']
+    if extra[0] == 'doctor' and not helping:  # Profile lines naming a bound project's directory are review candidates.
+        for folder, entry in sorted(registry(config)['projects'].items()):
+            if entry.get('vault_id') == info['vault_id']:
+                extra += ['--project-dir', folder]
     return brain.main(['--root', info['root'], *extra], prog='second-brain run')
 
 

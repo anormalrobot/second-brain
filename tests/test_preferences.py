@@ -63,6 +63,16 @@ class PreferencesCase(unittest.TestCase):
 
 
 class ScopeRuleTests(PreferencesCase):
+    def test_guidance_separates_general_and_project_preferences(self):
+        texts = {'compile steps': ' '.join(brain.COMPILE_STEPS), 'AGENTS template': brain.AGENTS_TEMPLATE,
+                 'compile skill': (PLUGIN / 'skills/compile/SKILL.md').read_text(),
+                 'memory skill': (PLUGIN / 'skills/memory/SKILL.md').read_text(),
+                 'README': (PLUGIN / 'README.md').read_text()}
+        for name, text in texts.items():
+            flat = ' '.join(text.split())
+            self.assertFalse('only for preferences the user stated' in flat, name)
+            self.assertTrue('every project' in flat and '## Preferences' in flat, name)
+
     def test_session_start_nudge_uses_the_scope_rule(self):
         self.handle('UserPromptSubmit', session='other', prompt='zzqx')
         self.handle('Stop', session='other', last_assistant_message='Done.')

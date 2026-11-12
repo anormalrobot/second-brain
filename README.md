@@ -226,6 +226,16 @@ Work normally in a project where you have run `init`. The plugin:
 - Loads your profile, project state, and recent records once at session start
   (and again after compaction); later prompts add only newly relevant note excerpts.
 - Guides the agent to maintain useful preferences, decisions, and next steps.
+- Keeps two kinds of preferences apart. `memory/profile.md` holds your general
+  preferences that hold in every project (language, answer style, ...).
+  Project-specific preferences (stack, tools, workflow, CI, release process, agent
+  orchestration) go in that project note's `## Preferences`, even when you stated
+  them; when unsure, the project note. The session brief starts with the project's
+  Preferences in full (up to 6000 characters) at every session start and again
+  after compaction, so the main session keeps following the project's way of
+  working. Subagents do not get them: the main session briefs its subagents. The
+  rest of the project note is cut by section when it is long: status, open
+  questions, and next steps first, then the goal, and the decision history last.
 - Saves bounded excerpts of your request and the final response under
   `memory/sessions/`: one record per agent session, with one section per turn.
   Each project keeps one records list, `memory/sessions/records/PROJECT.md`,
@@ -241,8 +251,8 @@ Work normally in a project where you have run `init`. The plugin:
   chronological history.
 - Compiles records into curated knowledge. When a session starts and other
   sessions left uncompiled records (or a run board was closed), the agent is asked to fold their durable
-  facts into the project note (Goal, Decisions, Status, Open questions, Next
-  steps), your profile, or `wiki/topics/`, citing the
+  facts into the project note (Goal, Preferences, Decisions, Status, Open
+  questions, Next steps), your profile (general preferences only), or `wiki/topics/`, citing the
   records, before or right after your first task. The current agent does this; no
   background model runs. You can also ask for it with `/second-brain:compile`
   in Claude Code or the `compile` skill in Codex. `run compile --status` and
@@ -275,7 +285,12 @@ reports the one-time vault changes (generated `index.md`, older checkpoints mark
 `recorded`, an empty `memory/decisions/` removed, an unedited older `AGENTS.md`
 refreshed), and `run migrate --apply` makes them after saving a snapshot under
 `.brain/snapshots/`. Your own edits to `AGENTS.md` and lines that only the old
-index linked are kept.
+index linked are kept. After upgrading to 0.6.6, `run migrate` also adds an empty
+`## Preferences` heading after `## Goal` to project notes that lack one (it moves
+no content) and refreshes the unedited 0.6.3–0.6.5 `AGENTS.md`. `run doctor` then
+suggests profile lines to move: `profile_size` (a profile over 3000 characters),
+`profile_project_specific` (profile lines naming a bound project or a path inside
+it), and `preferences_oversized` (a Preferences section over the brief's 6000).
 
 ### Growing the wiki
 
@@ -300,7 +315,8 @@ second-brain also shares memory between agents working together in one project.
 
 - **Subagents** (Claude Code or Codex) receive a short brief when they start: your
   profile, the project's goal, decisions, status, and next steps, and the active
-  run board. When a subagent finishes, its final message is saved in the parent
+  run board. The project's Preferences are not included: they guide the main
+  session, which gives each subagent its task. When a subagent finishes, its final message is saved in the parent
   session's record as a `## Subagent` section.
 - **CLI workers** (`codex exec` or `claude -p` started in the project) are ordinary
   sessions: they load memory and record their turns. Start them with

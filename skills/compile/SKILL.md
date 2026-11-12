@@ -1,6 +1,6 @@
 ---
 name: compile
-description: Compile this project's pending automatic conversation records and closed run boards into curated second-brain notes (project note sections including decisions, profile, wiki topics), citing them as evidence, then mark them compiled. Use when a session-start notice reports pending records or run boards, or when the user asks to compile, digest, or consolidate automatic memory.
+description: Compile this project's pending automatic conversation records and closed run boards into curated second-brain notes (project note sections including preferences and decisions, profile, wiki topics), citing them as evidence, then mark them compiled. Use when a session-start notice reports pending records or run boards, or when the user asks to compile, digest, or consolidate automatic memory.
 ---
 
 # Compile automatic records
@@ -34,9 +34,14 @@ user's first task, or right after it if that task is urgent.
    tasks, activity, and results are agent claims with evidence links, useful
    for the project's status, decisions, and next steps.
 3. Fold durable facts into curated notes:
-   - The project note sections: `## Goal`, `## Decisions` (decisions the user
-     accepted), `## Status`, `## Open questions`, `## Next steps`.
-   - `memory/profile.md`, only for preferences the user stated.
+   - The project note sections: `## Goal`, `## Preferences` (how the user
+     works in this project: stack, tools, workflow, CI, release process, agent
+     orchestration), `## Decisions` (decisions the user accepted), `## Status`,
+     `## Open questions`, `## Next steps`.
+   - `memory/profile.md`, only for the user's general preferences that hold in
+     every project (language, answer style, ...). A preference the user stated
+     while working on one project's specifics belongs in that project note's
+     `## Preferences`; when unsure, use the project note.
    - `wiki/topics/`, for reusable knowledge that applies across projects: edit
      the existing topic, or file a new page with `second-brain run file-answer
      --title "..." --text-file FILE --source RECORD_PATH [...]` (or append to one

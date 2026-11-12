@@ -210,5 +210,41 @@ class BriefTests(PreferencesCase):
                                     self.note.read_text() in text, (limit, text[-300:]))
 
 
+class DoctorTests(PreferencesCase):
+    def findings(self, kind):
+        code, report = self.cli('doctor')
+        self.assertEqual(code, 0, report)
+        return [f for f in report['findings'] if f['kind'] == kind]
+
+    def test_profile_size(self):
+        self.assertEqual(self.findings('profile_size'), [])
+        profile = self.root / 'memory/profile.md'
+        profile.write_text(profile.read_text() + 'x' * brain.PROFILE_BUDGET)
+        found, = self.findings('profile_size')
+        self.assertEqual(found['paths'], ['memory/profile.md'])
+        self.assertTrue(found['detail'].startswith(brain.REVIEW))
+
+    def test_profile_lines_naming_a_bound_project(self):
+        profile = self.root / 'memory/profile.md'
+        stem = Path(self.info['project']).stem
+        lines = ['# Profile', '', 'Answer in English.', 'The project uses general tooling.',
+                 'In proj alpha-2 CI runs on GitHub Actions.', f'Note: {stem} release steps.',
+                 f'Run scripts from {self.project}/scripts.', 'Profile memory note; project notes.']
+        profile.write_text(META + '\n'.join(lines) + '\n')
+        found, = self.findings('profile_project_specific')
+        offset = META.count('\n')
+        self.assertEqual(found['lines'], [offset + 5, offset + 6, offset + 7])
+        self.assertTrue(found['detail'].startswith(brain.REVIEW))
+        # Without the registry (brain doctor --root), note slugs still match.
+        names = brain.doctor(self.root)['findings']
+        self.assertIn(offset + 6, next(f for f in names if f['kind'] == 'profile_project_specific')['lines'])
+
+    def test_preferences_oversized(self):
+        self.assertEqual(self.findings('preferences_oversized'), [])
+        self.fill(preferences='p ' * brain.PREFERENCES_LIMIT)
+        found, = self.findings('preferences_oversized')
+        self.assertEqual(found['paths'], [self.info['project']])
+
+
 if __name__ == '__main__':
     unittest.main()

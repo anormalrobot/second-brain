@@ -7,7 +7,7 @@ import errno
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import socket
@@ -1856,7 +1856,70 @@ def content_findings(root, texts, edges):
     return findings
 
 
-def doctor(root, as_of=None, stale_days=90):
+def project_patterns(texts, project_dirs=()):
+    """{label: regex} naming bound projects: project-note stems (with and without the binding hash), project directory
+    names, and their absolute and ~/ paths. A name counts only when it is compound (it has a -, _, . or digit), so
+    common words like "notes" never match; such a project is still found by its path."""
+    names = set()
+    for relative in texts:
+        if relative.startswith('memory/projects/'):
+            stem = PurePosixPath(relative).stem
+            names.update({stem, re.sub(r'-[0-9a-f]{12}$', '', stem)})
+    names.update(Path(d).name for d in project_dirs)
+    patterns = {}
+    for name in sorted(names):
+        parts = [p for p in re.split(r'[-_. ]+', name.casefold()) if p]
+        if len(name) >= 4 and (len(parts) > 1 or re.search(r'\d', name)):
+            patterns[name] = re.compile(r'(?<![\w-])' + r'[-_. ]'.join(map(re.escape, parts)) + r'(?![\w-])', re.I)
+    home = str(Path.home())
+    for folder in project_dirs:
+        folder = str(folder).rstrip('/')
+        forms = [folder] + (['~' + folder[len(home):]] if folder.startswith(home + '/') else [])
+        for form in forms:
+            patterns[form] = re.compile(re.escape(form) + r'(?![\w.-])')
+    return patterns
+
+
+def preference_findings(root, texts, project_dirs=()):
+    """Review candidates for where preferences live: a long profile, profile lines naming a bound project, and a
+    project's Preferences section larger than the brief's block."""
+    findings = []
+    profile = texts.get('memory/profile.md', '')
+    start = body_start(profile)
+    size = len(profile[start:].strip())
+    if size > PROFILE_BUDGET:
+        findings.append({'kind': 'profile_size', 'paths': ['memory/profile.md'], 'count': size,
+                         'detail': REVIEW + f'the profile body has {size} characters (budget {PROFILE_BUDGET}; the '
+                                   f'brief shows its first {PROFILE_CAP}). Keep the user\'s general preferences '
+                                   'there and move project specifics to that project note\'s ## Preferences.'})
+    patterns = project_patterns(texts, project_dirs)
+    lines, named = [], set()
+    first = profile[:start].count('\n') + 1
+    for number, line in enumerate(profile[start:].splitlines(), first):
+        hits = [label for label, pattern in patterns.items() if pattern.search(line)]
+        if hits:
+            lines.append(number)
+            named.update(hits)
+    if lines:
+        findings.append({'kind': 'profile_project_specific', 'paths': ['memory/profile.md'], 'lines': lines,
+                         'names': sorted(named),
+                         'detail': REVIEW + 'these profile lines name a bound project or a path inside one. If they '
+                                   'state how to work in that project, move them to its project note\'s ## '
+                                   'Preferences; the profile keeps preferences that hold in every project.'})
+    for name in sorted(texts):
+        if name.startswith('memory/projects/'):
+            size = len(preferences_text(texts[name]))
+            if size > PREFERENCES_LIMIT:
+                findings.append({'kind': 'preferences_oversized', 'paths': [name], 'count': size,
+                                 'detail': REVIEW + f'the ## Preferences section has {size} characters; the brief '
+                                           f'shows at most {PREFERENCES_LIMIT} at session start and after compaction. '
+                                           'Shorten it or move history to Decisions.'})
+    return findings
+
+
+def doctor(root, as_of=None, stale_days=90, project_dirs=()):
+    """Structural check plus review candidates. project_dirs are the code directories bound to this vault (the
+    router passes them from the registry), so profile lines naming them by path are found too."""
     root = Path(root).resolve()
     today = date.fromisoformat(as_of or day())
     edges = {}
@@ -1887,6 +1950,7 @@ def doctor(root, as_of=None, stale_days=90):
             if meta.get('claim_key') and meta.get('claim_value') and meta.get('status') != 'superseded':
                 claims.setdefault(meta['claim_key'], []).append((name, meta['claim_value']))
     findings += content_findings(root, texts, edges)
+    findings += preference_findings(root, texts, project_dirs)
     covered = coverage(root)
     if covered['unregistered_paths']:
         findings.append({'kind': 'unregistered_source', 'paths': covered['unregistered_paths'],
@@ -2174,6 +2238,9 @@ def main(argv=None, prog=None):
     p = add('compile'); p.add_argument('--project', **bound, required=True); p.add_argument('--limit', type=int, default=COMPILE_LIMIT); p.add_argument('--status', action='store_true'); p.add_argument('--done', metavar='TOKEN'); p.add_argument('--updated', action='append', default=[], metavar='NOTE'); p.add_argument('--skip', action='append', default=[], metavar='RECORD'); p.add_argument('--date'); p.add_argument('--session', metavar='KEY', help="List every pending part of this one session (--limit does not apply; citing any part covers all)")
     p = add('search'); p.add_argument('query'); p.add_argument('--limit', type=int, default=8)
     p = add('doctor'); p.add_argument('--as-of'); p.add_argument('--stale-days', type=int, default=90)
+    p.add_argument('--project-dir', action='append', default=[], metavar='DIR',
+                   help=argparse.SUPPRESS if routed else 'A code directory bound to this vault (repeatable); profile '
+                   'lines naming it are reported')
     p = add('consolidate'); p.add_argument('--source', required=True); p.add_argument('--target', required=True); p.add_argument('--text-file', type=Path, required=True); p.add_argument('--evidence', action='append', required=True); p.add_argument('--expected-sha', required=True); p.add_argument('--date')
     p = add('file-answer'); p.add_argument('--title'); p.add_argument('--text-file', type=Path, required=True); p.add_argument('--source', action='append', default=[], metavar='PATH'); p.add_argument('--slug'); p.add_argument('--update', action='store_true'); p.add_argument('--expected-sha'); p.add_argument('--date')
     add('index')
@@ -2201,7 +2268,7 @@ def main(argv=None, prog=None):
             elif args.updated or args.skip: raise ValueError('--updated and --skip require --done TOKEN')
             else: result = compile_list(root, args.project, args.limit, args.session)
         elif args.command == 'search': result = search(root, args.query, args.limit)
-        elif args.command == 'doctor': result = doctor(root, args.as_of, args.stale_days)
+        elif args.command == 'doctor': result = doctor(root, args.as_of, args.stale_days, args.project_dir)
         elif args.command == 'consolidate': result = consolidate(root, args.source, args.target, args.text_file.read_text(encoding='utf-8'), args.evidence, args.expected_sha, args.date)
         elif args.command == 'file-answer':
             with args.text_file.open(encoding='utf-8') as handle:

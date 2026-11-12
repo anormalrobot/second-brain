@@ -256,5 +256,70 @@ class DoctorTests(PreferencesCase):
         self.assertEqual(found['paths'], [self.info['project']])
 
 
+class ReviewFixTests(PreferencesCase):
+    """Codex review of 0.6.6: CRLF headings, dense notes, the shared Preferences fit, and source-true counts."""
+
+    def test_crlf_preferences_heading_is_recognized(self):
+        text = (META + '# Project\n\n## Goal\n\nShip it.\n\n## Preferences\n\n- CRLF_RULE: use tabs.\n\n'
+                '## Status\n\nHalfway.\n').replace('\n', '\r\n')
+        self.assertEqual(brain.add_sections(text, ('Preferences',)), (text, []))
+        self.assertEqual(brain.add_sections(text, brain.PROJECT_SECTIONS)[0].count('## Preferences'), 1)
+        self.note.write_bytes(text.encode())
+        self.assertEqual(brain.notes_without_preferences(self.root), [])
+        self.assertIn('CRLF_RULE', brain.brief(self.root, self.info['project']))
+
+    def dense_note(self, count=30):
+        body = ''.join(f'## Topic {n:02d}\n\n' + f'topic {n} text. ' * 12 + '\n\n' for n in range(count))
+        self.note.write_text(META + '# Project\n\nIntro.\n\n' + body)
+        return self.note.read_text()
+
+    def test_dense_note_fits_the_cap_and_keeps_markers_whole(self):
+        text = self.dense_note()
+        view = brain.project_view(text, brain.PROJECT_CAP)
+        self.assertLessEqual(len(view), brain.PROJECT_CAP)
+        rest = view.replace(brain.SECTION_CUT, '').replace(brain.SECTIONS_OMITTED, '')
+        self.assertNotIn('[', rest)
+        for heading in re.findall(r'^## .+$', view, re.M):  # Every shown heading is a whole section's.
+            self.assertIn(heading + '\n', text)
+        crowded = brain.project_view(self.dense_note(80), brain.PROJECT_CAP)  # Headings alone exceed the cap.
+        self.assertLessEqual(len(crowded), brain.PROJECT_CAP)
+        self.assertTrue(crowded.endswith(brain.SECTIONS_OMITTED))
+        self.assertIn('## Topic 00\n', crowded)
+        self.dense_note()
+        for limit in range(500, 6001, 37):
+            brief = brain.brief(self.root, self.info['project'], limit=limit)
+            self.assertLessEqual(len(brief), limit)
+            self.assertNotRegex(brief, r'\[se[^\]]*\n\[truncated')
+            shown = brief[brief.index('FILE: ' + self.info['project']):] if 'FILE: ' + self.info['project'] in brief else ''
+            for found in re.findall(r'\[[a-z][^\]\n]*', shown):
+                self.assertTrue(found + ']' in shown, (limit, found))
+
+    def test_doctor_reports_preferences_the_brief_truncates(self):
+        self.fill(preferences='p' * (brain.PREFERENCES_LIMIT - 50))
+        self.assertIn('[truncated: ## Preferences', brain.brief(self.root, self.info['project']))
+        found, = self.findings('preferences_oversized')
+        self.assertEqual(found['paths'], [self.info['project']])
+        self.fill(preferences='')
+        self.note.write_text(self.note.read_text().replace('p' * (brain.PREFERENCES_LIMIT - 50), 'p' * 1000))
+        self.assertNotIn('[truncated: ## Preferences', brain.brief(self.root, self.info['project']))
+        self.assertEqual(self.findings('preferences_oversized'), [])
+
+    def findings(self, kind):
+        return DoctorTests.findings(self, kind)
+
+    def test_file_marker_counts_source_characters_only(self):
+        self.note.write_text(META + '# P\n\n## Preferences\n\n- Short.\n')
+        total = len(self.note.read_text())
+        brief = brain.brief(self.root, self.info['project'])
+        for count, of in re.findall(r'shows (\d+) of (\d+) chars', brief):
+            self.assertLessEqual(int(count), int(of))
+        text = self.dense_note()
+        for limit in range(500, 6001, 37):
+            brief = brain.brief(self.root, self.info['project'], limit=limit)
+            for count, of in re.findall(re.escape(self.info['project']) + r' shows (\d+) of (\d+) chars', brief):
+                self.assertLessEqual(int(count), int(of))
+                self.assertLess(int(count), len(text))
+
+
 if __name__ == '__main__':
     unittest.main()

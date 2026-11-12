@@ -126,5 +126,89 @@ class SectionTests(PreferencesCase):
         self.assertEqual((again['changes'], again['preferences']), (0, []))
 
 
+PREFS = '- Release: tag vX.Y.Z after the gate passes (user).\n' + ''.join(
+    f'- PREF_RULE_{n:03d}: run the review pipeline step {n} before merging.\n' for n in range(60))
+
+
+class BriefTests(PreferencesCase):
+    def test_preferences_lead_the_brief_whole_and_are_not_repeated(self):
+        self.assertGreater(len(PREFS), 3000)
+        self.fill(goal='GOAL_TEXT', preferences=PREFS.strip(), status='STATUS_TEXT')
+        text = brain.brief(self.root, self.info['project'])
+        block = text.index('PROJECT PREFERENCES')
+        self.assertLess(block, text.index('FILE: memory/profile.md'))
+        self.assertIn(PREFS.strip(), text)
+        self.assertEqual(text.count('PREF_RULE_059'), 1)
+        self.assertIn('STATUS_TEXT', text)
+        self.assertIn('## Preferences\n\n' + brain.PREFERENCES_SHOWN, text)
+        self.assertLessEqual(len(text), 6000 + brain.PREFERENCES_LIMIT)
+        self.fill(decisions='d' * 5000)  # A note cut by section keeps the pointer whole too.
+        self.note.write_text(self.note.read_text().replace('STATUS_TEXT', 'STATUS_TEXT ' + 's' * 5000))
+        self.assertIn('## Preferences\n\n' + brain.PREFERENCES_SHOWN, brain.brief(self.root, self.info['project']))
+
+    def test_stub_preferences_add_nothing(self):
+        self.assertNotIn('PROJECT PREFERENCES', brain.brief(self.root, self.info['project']))
+
+    def test_oversized_preferences_are_cut_with_a_marker(self):
+        self.fill(preferences=PREFS * 3)
+        text = brain.brief(self.root, self.info['project'])
+        block = text[text.index('PROJECT PREFERENCES'):text.index('FILE: ')]
+        self.assertLessEqual(len(block), brain.PREFERENCES_LIMIT)
+        self.assertRegex(block, r'\[truncated: ## Preferences shows \d+ of \d+ chars; read the project note\]')
+
+    def test_project_note_keeps_status_and_next_steps_and_shortens_decisions(self):
+        self.fill(goal='GOAL_TEXT', decisions='DECISION_HISTORY ' + 'd' * 6000, status='STATUS_TEXT current.',
+                  open_questions='OPEN_TEXT', next_steps='NEXT_TEXT')
+        text = brain.brief(self.root, self.info['project'], limit=6000)
+        self.assertLessEqual(len(text), 6000)
+        shown = text[text.index('FILE: ' + self.info['project']):]
+        for marker in ('STATUS_TEXT current.', 'OPEN_TEXT', 'NEXT_TEXT', 'GOAL_TEXT', 'DECISION_HISTORY'):
+            self.assertIn(marker, shown)
+        self.assertIn('[section truncated; read the project note]', shown)
+        self.assertIn('## Preferences\n\nNone recorded yet.', shown)  # A stub costs less than a marker.
+        self.assertRegex(shown, r'\[truncated: ' + re.escape(self.info['project']) + r' shows \d+ of \d+ chars')
+
+    def test_long_status_is_preferred_over_goal_and_decisions(self):
+        self.fill(goal='GOAL_TEXT ' + 'g' * 900, decisions='DECISION_TEXT ' + 'd' * 900,
+                  status='STATUS_HEAD ' + 's' * 400, next_steps='NEXT_TEXT ' + 'n' * 400)
+        text = brain.brief(self.root, self.info['project'], limit=8000)
+        shown = text[text.index('FILE: ' + self.info['project']):]
+        self.assertIn('s' * 400, shown)
+        self.assertIn('n' * 400, shown)
+        self.assertNotIn('d' * 900, shown)  # The decision history is shortened first.
+
+    def test_session_start_and_compact_carry_preferences_but_subagents_do_not(self):
+        self.fill(goal='GOAL_TEXT', preferences=PREFS.strip(), status='STATUS_TEXT')
+        for source in ('startup', 'compact'):
+            text = self.context(self.handle('SessionStart', source=source))
+            brief = json.loads(text[text.index('{"vault"'):])['brief']
+            self.assertIn(PREFS.strip(), brief, source)
+            self.assertIn('Preferences', text.split('{"vault"')[0])  # The instructions point at them.
+        sub = self.context(self.handle('SubagentStart', agent_id='agent-1', agent_type='general-purpose'))
+        self.assertIn('GOAL_TEXT', sub)
+        self.assertNotIn('PREF_RULE', sub)
+        self.assertNotIn('Preferences', sub)
+
+    def test_limits_and_markers_hold_with_sections_and_preferences(self):
+        sizes = ((40, 300, 3000, 200, 100), (900, 4000, 50, 2500, 2500), (0, 0, 9000, 10, 10), (7000, 10, 10, 10, 10))
+        for prefs, goal, decisions, status, next_steps in sizes:
+            self.note.write_text(META + '# Project\n\nIntro.\n' + brain.section_stubs(brain.PROJECT_SECTIONS))
+            self.fill(**{k: v for k, v in dict(preferences='P' * prefs, goal='g' * goal, decisions='d' * decisions,
+                                                  status='s' * status, next_steps='n' * next_steps).items() if v})
+            total = len(self.note.read_text())
+            for limit in range(500, 4001, 61):
+                text = brain.brief(self.root, self.info['project'], limit=limit)
+                files = text[text.index('FILE: ') - 2:] if 'FILE: ' in text else ''
+                block = text[:len(text) - len(files)]
+                self.assertLessEqual(len(block), len(brain.BRIEF_HEADER) + brain.PREFERENCES_LIMIT)
+                self.assertLessEqual(len(text) - len(block) + len(brain.BRIEF_HEADER) * bool(files), limit)
+                markers = re.findall(r'\[(?:truncated|omitted|brief truncated)[^\]]*\]', text)
+                self.assertEqual(len(markers), text.count('[truncated') + text.count('[omitted') +
+                                 text.count('[brief truncated'))
+                if ('FILE: ' + self.info['project']) in text:
+                    self.assertTrue(re.search(r'shows \d+ of ' + str(total) + r' chars', text) or
+                                    self.note.read_text() in text, (limit, text[-300:]))
+
+
 if __name__ == '__main__':
     unittest.main()

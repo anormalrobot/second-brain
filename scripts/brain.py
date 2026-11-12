@@ -1538,17 +1538,107 @@ def brief_paths(root, project=None):
     return [relative for relative, _ in brief_files(root, project)]
 
 
+BRIEF_HEADER = 'Shared memory: read index.md for deeper evidence. Save meaningful progress with second-brain run checkpoint.'
+NAVIGATION = POINTERS + ('Last compiled:',)
+PREFERENCES_SHOWN = '[shown above: PROJECT PREFERENCES]\n'  # Shorter than SECTION_CUT, so never cut.
+SECTION_CUT = '\n[section truncated; read the project note]\n\n'
+# Brief priority of the project note's parts when it does not fit: the text before the first section, then the
+# current state, then the goal, then other sections, and the decision history (shortened first) last.
+BRIEF_ORDER = ((), ('status', 'open questions', 'next steps'), ('goal', 'preferences'), None, ('decisions',))
+
+
+def preferences_text(note):
+    """The project note's Preferences body without navigation lines, or '' when it is absent or a stub."""
+    body = sections(drop_body_lines(note, NAVIGATION)).get('preferences', '')
+    return '' if not body.strip() or is_stub(body) else body.strip('\n')
+
+
+def preferences_block(project, body, limit=PREFERENCES_LIMIT):
+    """The brief's Preferences block, at most limit characters; a longer section is cut at a line with a marker."""
+    head = f'\n\nPROJECT PREFERENCES ({project}, ## Preferences: how the user works in this project; follow them):\n'
+    if len(head) + len(body) <= limit:
+        return head + body
+    marker = lambda count: f'\n[truncated: ## Preferences shows {count} of {len(body)} chars; read the project note]'
+    shown = limit
+    for _ in range(2):  # The count's digits affect the marker length.
+        room = max(0, limit - len(head) - len(marker(shown)))
+        cut = body.rfind('\n', 0, room + 1)
+        shown = cut if cut > room // 2 else room
+    return head + body[:shown] + marker(shown)
+
+
+def project_view(text, cap, moved=False):
+    """The project note as the brief shows it, within cap characters where possible. With moved, the Preferences
+    body (shown in the block above) becomes a pointer. A note that does not fit loses its frontmatter and navigation
+    lines, and its sections share cap by BRIEF_ORDER: each group takes what it needs from the room the groups
+    before it left, and a section that does not fit whole is cut with SECTION_CUT (one no longer than that marker is
+    always shown whole)."""
+    if moved:
+        for name, _, body, end in section_spans(text):
+            if name == 'preferences':
+                text = text[:body] + '\n' + PREFERENCES_SHOWN + ('\n' if end < len(text) else '') + text[end:]
+                break
+    if len(text) <= cap:
+        return text
+    text = drop_body_lines(text[body_start(text):], NAVIGATION)
+    spans = section_spans(text)
+    if len(text) <= cap or not spans:
+        return text
+    pieces, last = [], 0  # (group, heading, body); text outside any section keeps its place.
+    for name, start, body, end in spans:
+        if start > last:
+            pieces.append((0 if not pieces else BRIEF_ORDER.index(None), '', text[last:start]))
+        group = next((g for g, names in enumerate(BRIEF_ORDER) if names and name in names), BRIEF_ORDER.index(None))
+        pieces.append((group, text[start:body], text[body:end]))
+        last = end
+    if last < len(text):
+        pieces.append((BRIEF_ORDER.index(None), '', text[last:]))
+    # A body no longer than the marker (a stub) is shown whole; every other body reserves its marker first, and
+    # room left over at the end goes to the cut bodies in priority order.
+    small = {i for i, (_, _, body) in enumerate(pieces) if len(body) <= len(SECTION_CUT)}
+    shares = {i: len(pieces[i][2]) for i in small}
+    room = (cap - sum(len(head) for _, head, _ in pieces) - sum(shares.values())
+            - len(SECTION_CUT) * (len(pieces) - len(small)))
+    order = sorted(range(len(pieces)), key=lambda i: (pieces[i][0], len(pieces[i][2])))
+    for group in sorted({g for g, _, _ in pieces}):
+        members = [i for i in order if pieces[i][0] == group and i not in small]
+        for left, i in zip(range(len(members), 0, -1), members):
+            shares[i] = min(len(pieces[i][2]), max(0, room) // left)
+            room -= shares[i]
+    room += len(SECTION_CUT) * sum(1 for i in range(len(pieces)) if i not in small and shares[i] == len(pieces[i][2]))
+    for i in order:
+        extra = min(len(pieces[i][2]) - shares[i], max(0, room))
+        shares[i] += extra
+        room -= extra
+    return ''.join(head + (body if shares[i] == len(body) else body[:shares[i]] + SECTION_CUT)
+                   for i, (_, head, body) in enumerate(pieces))
+
+
 def brief(root, project=None, limit=6000):
     return brief_with_paths(root, project, limit)[0]
 
 
 def brief_with_paths(root, project=None, limit=6000):
-    """The brief and the vault-relative files it shows (wholly or truncated), from one read pass."""
+    """The brief and the vault-relative files it shows (wholly or truncated), from one read pass.
+
+    A non-empty Preferences section of the project note leads the brief, after its first line, as its own block of
+    at most PREFERENCES_LIMIT characters on top of limit; the project note itself then shows a pointer instead."""
     root = Path(root).resolve()
     if limit < 500:
         raise ValueError('Context limit must be at least 500 characters')
-    out = 'Shared memory: read index.md for deeper evidence. Save meaningful progress with second-brain run checkpoint.'
     files = brief_files(root, project)
+    preferences = preferences_text(dict(files).get(project, '')) if project else ''
+    out, shown_paths = files_brief(files, project, limit, bool(preferences))
+    if preferences:
+        block = preferences_block(project, preferences)
+        out = (out[:len(BRIEF_HEADER)] + block + out[len(BRIEF_HEADER):] if out.startswith(BRIEF_HEADER)
+               else block.lstrip('\n') + '\n' + out)
+    return out, shown_paths
+
+
+def files_brief(files, project, limit, moved):
+    """The brief's file part within limit: each file in brief order, cut to its cap, with complete markers."""
+    out = BRIEF_HEADER
     shown_paths = []
 
     def omitted(rest, room):
@@ -1570,10 +1660,11 @@ def brief_with_paths(root, project=None, limit=6000):
     for number, (relative, text) in enumerate(files):
         head = '\n\nFILE: ' + relative + '\n'
         later = [r for r, _ in files[number + 1:]]
-        cap = 1100 if relative == 'memory/profile.md' else 1800
-        view = recent_turns(text, cap)  # A session record shows its header and latest turns.
+        cap = PROFILE_CAP if relative == 'memory/profile.md' else PROJECT_CAP if relative == project else FILE_CAP
+        # The project note is cut by section; a session record shows its header and latest turns.
+        view = project_view(text, cap, moved) if relative == project else recent_turns(text, cap)
         shown = min(len(view), cap)
-        tail = truncated(relative, shown, len(text)) if shown < len(text) else ''
+        tail = truncated(relative, shown, len(text)) if view[:shown] != text else ''
         chunk = head + view[:shown] + tail
         rest = omitted(later, limit - len(out) - len(chunk))
         if rest is not None:
